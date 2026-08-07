@@ -1,0 +1,410 @@
+"""C2 beaconing detection.
+
+An implant checking in with its controller leaves a signature that survives
+encryption, domain fronting, and port choice: it is *regular*. The payload is
+opaque, but the rhythm is not.
+
+Six independent measurements are taken over each source→destination pair and
+combined with a weighted geometric mean:
+
+    interval regularity   how tightly inter-arrival times cluster (MAD/median)
+    interval symmetry     Bowley skewness — jitter is symmetric, humans skew
+    payload uniformity    check-ins carry near-constant bytes; browsing does not
+    periodicity           binned autocorrelation, which survives missed check-ins
+    persistence           coverage of the observation window, without gaps
+    destination rarity    how much of the estate talks to this destination
+
+The geometric mean is the load-bearing choice. Any one of these signals in
+isolation produces a flood of false positives — NTP is regular, a health check
+is uniform, a cron job is periodic. Requiring all six simultaneously is what
+separates an implant from infrastructure, and it is why this analyzer can run
+with no allowlist tuning and still stay quiet.
+
+Measurements that cannot be taken are omitted rather than scored zero, and the
+weights renormalise over what remains. A sensor that does not record byte
+counts loses a signal; it does not acquire a false one.
+
+No language model is involved at any point.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+import numpy as np
+import polars as pl
+
+from voidai.analyzers.base import AnalysisContext, BaseAnalyzer
+from voidai.analyzers.statistics import (
+    autocorrelation_at_period,
+    bowley_skewness,
+    coefficient_of_dispersion,
+    destination_rarity,
+    median_absolute_deviation,
+    saturating,
+    weighted_geometric_mean,
+)
+from voidai.lexicon import Artifact, Evidence, Finding, Predicate, Severity
+
+_WEIGHTS = {
+    "interval_regularity": 0.26,
+    "interval_symmetry": 0.12,
+    "payload_uniformity": 0.20,
+    "periodicity": 0.18,
+    "persistence": 0.12,
+    "destination_rarity": 0.12,
+}
+
+
+@dataclass(frozen=True)
+class BeaconingConfig:
+    """Tunables, with defaults chosen to favour precision over recall.
+
+    A SOC drowning in alerts is worse off than one seeing nothing, so the
+    defaults are set where a missed low-and-slow beacon is preferred to a
+    daily false positive on a monitoring agent.
+    """
+
+    min_connections: int = 24
+    min_span_seconds: float = 3600.0
+    min_period_seconds: float = 1.0
+    max_period_seconds: float = 86400.0
+
+    #: Interval dispersion at which the regularity score reaches zero.
+    #: 0.6 tolerates roughly ±60% jitter before a pair is dismissed outright.
+    max_interval_dispersion: float = 0.6
+    #: Payload dispersion at which the uniformity score reaches zero.
+    max_size_dispersion: float = 0.5
+    #: Sample count beyond which more samples add little confidence.
+    #: Kept low deliberately: a 30-minute beacon can only check in 48 times a
+    #: day, and that is the ceiling for its period, not a weakness in it.
+    #: `min_connections` is what guards against small-sample flukes.
+    strong_sample_count: int = 15
+
+    score_threshold: float = 0.72
+    #: Score above which a finding is promoted from HIGH to CRITICAL.
+    critical_threshold: float = 0.90
+
+    #: Protocols whose periodicity is structural rather than suspicious.
+    #: Deliberately tiny — a large default allowlist is where detection
+    #: coverage quietly goes to die.
+    ignore_ports: frozenset[int] = frozenset({123})  # NTP
+    ignore_services: frozenset[str] = frozenset({"ntp", "dhcp"})
+
+    #: Ceiling on emitted findings, highest-scoring first.
+    max_findings: int = 200
+    #: Connections sampled as artifacts per finding.
+    artifact_samples: int = 5
+
+
+@dataclass
+class BeaconScore:
+    """The full measurement for one source→destination pair."""
+
+    score: float
+    components: dict[str, float]
+    period_seconds: float
+    interval_dispersion: float
+    interval_skewness: float
+    median_bytes: float
+    size_dispersion: float
+    autocorrelation: float | None
+    contacting_hosts: int
+    sample_count: int
+    span_seconds: float
+    coverage: float
+    first_seen: float
+    last_seen: float
+
+    def basis(self) -> str:
+        """A one-line, checkable justification for the confidence score."""
+        parts = ", ".join(f"{k}={v:.2f}" for k, v in sorted(self.components.items()))
+        return (
+            f"weighted geometric mean of [{parts}] over {self.sample_count} connections "
+            f"spanning {self.span_seconds / 3600:.1f}h; "
+            f"period={self.period_seconds:.1f}s, jitter={self.interval_dispersion:.1%}"
+        )
+
+
+def score_pair(
+    timestamps: np.ndarray,
+    payload_bytes: np.ndarray,
+    config: BeaconingConfig,
+    contacting_hosts: int = 1,
+) -> BeaconScore | None:
+    """Measure one source→destination pair. Returns None if it cannot qualify.
+
+    Separated from the Polars and Lexicon plumbing so the mathematics can be
+    tested directly against synthesised beacons and against known-benign
+    periodic traffic.
+    """
+    timestamps = np.sort(np.asarray(timestamps, dtype=np.float64))
+    sample_count = int(timestamps.size)
+    if sample_count < config.min_connections:
+        return None
+
+    span = float(timestamps[-1] - timestamps[0])
+    if span < config.min_span_seconds:
+        return None
+
+    intervals = np.diff(timestamps)
+    intervals = intervals[intervals > 0]
+    if intervals.size < 3:
+        return None
+
+    period = float(np.median(intervals))
+    if not (config.min_period_seconds <= period <= config.max_period_seconds):
+        return None
+
+    # --- the six measurements ---------------------------------------------
+    interval_dispersion = coefficient_of_dispersion(intervals)
+    regularity = 1.0 - min(1.0, interval_dispersion / config.max_interval_dispersion)
+
+    skewness = bowley_skewness(intervals)
+    symmetry = 1.0 - min(1.0, abs(skewness))
+
+    components: dict[str, float] = {
+        "interval_regularity": regularity,
+        "interval_symmetry": symmetry,
+    }
+
+    sizes = np.asarray(payload_bytes, dtype=np.float64)
+    sizes = sizes[np.isfinite(sizes)]
+    if sizes.size >= 3:
+        size_dispersion = coefficient_of_dispersion(sizes)
+        median_bytes = float(np.median(sizes))
+        components["payload_uniformity"] = 1.0 - min(
+            1.0, size_dispersion / config.max_size_dispersion
+        )
+    else:
+        # This sensor did not record byte counts. Omit the measurement so the
+        # remaining weights renormalise, rather than inventing a value.
+        size_dispersion, median_bytes = float("nan"), float("nan")
+
+    autocorrelation = autocorrelation_at_period(
+        timestamps, period, jitter_scale=median_absolute_deviation(intervals)
+    )
+    if autocorrelation is not None:
+        components["periodicity"] = autocorrelation
+
+    expected_intervals = span / period if period > 0 else 0.0
+    coverage = (
+        min(intervals.size, expected_intervals) / max(intervals.size, expected_intervals)
+        if expected_intervals > 0
+        else 0.0
+    )
+    components["persistence"] = coverage * saturating(sample_count, config.strong_sample_count)
+    components["destination_rarity"] = destination_rarity(contacting_hosts)
+
+    return BeaconScore(
+        score=weighted_geometric_mean(components, _WEIGHTS),
+        components=components,
+        period_seconds=period,
+        interval_dispersion=interval_dispersion,
+        interval_skewness=skewness,
+        median_bytes=median_bytes,
+        size_dispersion=size_dispersion,
+        autocorrelation=autocorrelation,
+        contacting_hosts=contacting_hosts,
+        sample_count=sample_count,
+        span_seconds=span,
+        coverage=coverage,
+        first_seen=float(timestamps[0]),
+        last_seen=float(timestamps[-1]),
+    )
+
+
+class BeaconingAnalyzer(BaseAnalyzer):
+    """Emits `BEACONS_TO` findings for periodic source→destination pairs."""
+
+    name = "beaconing"
+    version = "0.1.0"
+
+    def __init__(self, config: BeaconingConfig | None = None) -> None:
+        self.config = config or BeaconingConfig()
+
+    # --- pipeline ---------------------------------------------------------
+
+    def analyze(self, ctx: AnalysisContext) -> list[Finding]:
+        pairs = self._group_pairs(ctx.connections)
+        if pairs.is_empty():
+            return []
+
+        prevalence = self._destination_prevalence(ctx.connections)
+
+        scored: list[tuple[BeaconScore, dict[str, object]]] = []
+        for row in pairs.iter_rows(named=True):
+            score = score_pair(
+                np.asarray(row["ts"], dtype=np.float64),
+                np.asarray(row["orig_bytes"], dtype=np.float64),
+                self.config,
+                contacting_hosts=prevalence.get(str(row["dst_ip"]), 1),
+            )
+            if score is not None and score.score >= self.config.score_threshold:
+                scored.append((score, row))
+
+        scored.sort(key=lambda item: item[0].score, reverse=True)
+        return [
+            self._build_finding(score, row, ctx)
+            for score, row in scored[: self.config.max_findings]
+        ]
+
+    def _destination_prevalence(self, connections: pl.DataFrame) -> dict[str, int]:
+        """How many distinct hosts contact each destination.
+
+        Computed over the whole capture rather than the filtered subset: a
+        destination's prevalence across the estate is a property of the
+        environment, and narrowing the denominator would make rare-looking
+        destinations out of ordinary ones.
+        """
+        if connections.is_empty():
+            return {}
+        counts = (
+            connections.drop_nulls(subset=["src_ip", "dst_ip"])
+            .group_by("dst_ip")
+            .agg(pl.col("src_ip").n_unique().alias("hosts"))
+        )
+        return dict(zip(counts["dst_ip"].to_list(), counts["hosts"].to_list(), strict=True))
+
+    def _group_pairs(self, connections: pl.DataFrame) -> pl.DataFrame:
+        """Collapse connections into per-(src, dst, port) arrays.
+
+        Only the four columns the scorer needs are carried through the
+        aggregation. On a 10M-row conn.log this is the difference between a
+        few hundred megabytes and several gigabytes of intermediate state —
+        which matters when the target has 8GB total.
+        """
+        if connections.is_empty():
+            return connections
+
+        frame = connections.drop_nulls(subset=["ts", "src_ip", "dst_ip"])
+
+        if self.config.ignore_ports:
+            frame = frame.filter(
+                pl.col("dst_port").is_null()
+                | ~pl.col("dst_port").is_in(list(self.config.ignore_ports))
+            )
+        if self.config.ignore_services and "service" in frame.columns:
+            frame = frame.filter(
+                pl.col("service").is_null()
+                | ~pl.col("service").str.to_lowercase().is_in(list(self.config.ignore_services))
+            )
+
+        if frame.is_empty():
+            return frame
+
+        return (
+            frame.sort("ts")
+            .group_by(["src_ip", "dst_ip", "dst_port"])
+            .agg(
+                pl.col("ts"),
+                pl.col("orig_bytes"),
+                pl.col("source_file"),
+                pl.col("source_line"),
+                pl.len().alias("n"),
+            )
+            .filter(pl.col("n") >= self.config.min_connections)
+        )
+
+    # --- evidence construction -------------------------------------------
+
+    def _sample_indices(self, count: int) -> list[int]:
+        """Pick spread-out representatives: first, last, and evenly between.
+
+        An analyst verifying a finding wants to see the beacon at the start of
+        the window and at the end, not five consecutive lines from the middle.
+        """
+        wanted = min(self.config.artifact_samples, count)
+        if wanted <= 1:
+            return [0]
+        step = (count - 1) / (wanted - 1)
+        return sorted({round(i * step) for i in range(wanted)})
+
+    def _artifacts(self, row: dict[str, object], score: BeaconScore) -> list[Artifact]:
+        timestamps = row["ts"]
+        files = row["source_file"]
+        lines = row["source_line"]
+        artifacts: list[Artifact] = []
+
+        for index in self._sample_indices(len(timestamps)):
+            source = files[index] if index < len(files) and files[index] else "<unknown>"
+            line = lines[index] if index < len(lines) and lines[index] is not None else index
+            artifacts.append(
+                Artifact(
+                    source=str(source),
+                    locator=f"line:{line}",
+                    observed_at=datetime.fromtimestamp(float(timestamps[index]), tz=timezone.utc),
+                    excerpt=(
+                        f"{row['src_ip']} -> {row['dst_ip']}:{row['dst_port']} "
+                        f"at t={float(timestamps[index]):.3f}"
+                    ),
+                )
+            )
+        return artifacts
+
+    def _evidence(self, score: BeaconScore, artifacts: list[Artifact]) -> list[Evidence]:
+        timing = Evidence(
+            kind="interval_regularity",
+            summary=(
+                f"{score.sample_count} connections at {score.period_seconds:.1f}s intervals "
+                f"(±{score.interval_dispersion:.1%}) over {score.span_seconds / 3600:.1f}h"
+            ),
+            payload={
+                "period_seconds": round(score.period_seconds, 3),
+                "interval_dispersion": round(score.interval_dispersion, 4),
+                "interval_skewness": round(score.interval_skewness, 4),
+                "autocorrelation": (
+                    round(score.autocorrelation, 4)
+                    if score.autocorrelation is not None
+                    else None
+                ),
+                "coverage": round(score.coverage, 4),
+                "sample_count": score.sample_count,
+                "span_seconds": round(score.span_seconds, 1),
+                "contacting_hosts": score.contacting_hosts,
+            },
+            artifacts=artifacts,
+        )
+
+        evidence = [timing]
+        if np.isfinite(score.median_bytes):
+            evidence.append(
+                Evidence(
+                    kind="payload_uniformity",
+                    summary=(
+                        f"outbound payload {score.median_bytes:.0f} bytes median "
+                        f"(±{score.size_dispersion:.1%})"
+                    ),
+                    payload={
+                        "median_bytes": round(score.median_bytes, 1),
+                        "size_dispersion": round(score.size_dispersion, 4),
+                    },
+                    artifacts=artifacts,
+                )
+            )
+        return evidence
+
+    def _build_finding(
+        self,
+        score: BeaconScore,
+        row: dict[str, object],
+        ctx: AnalysisContext,
+    ) -> Finding:
+        artifacts = self._artifacts(row, score)
+        return Finding(
+            predicate=Predicate.BEACONS_TO,
+            subject=ctx.actor(str(row["src_ip"])),
+            object=ctx.target(str(row["dst_ip"])),
+            evidence=self._evidence(score, artifacts),
+            confidence=round(score.score, 4),
+            basis=score.basis(),
+            severity=(
+                Severity.CRITICAL
+                if score.score >= self.config.critical_threshold
+                else Severity.HIGH
+            ),
+            analyzer=self.qualname,
+            first_seen=datetime.fromtimestamp(score.first_seen, tz=timezone.utc),
+            last_seen=datetime.fromtimestamp(score.last_seen, tz=timezone.utc),
+        )

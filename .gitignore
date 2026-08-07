@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Model weights are never committed. See docs/models.md for fetch instructions.
+models/
+*.gguf
+*.bin
+*.safetensors
+
+# Local run artifacts
+runs/
+*.log
+!tests/data/**/*.log
