@@ -91,18 +91,20 @@ real botnet captures on a university network, with per-flow ground truth.
 | Infected host found | **yes** | **yes** | 5 of 6 implants |
 | C2 confidence | **0.958** | 0.749 | — |
 | Findings / hour | 19.1 | 183.5 | — |
-| Throughput | 272k rec/s | 287k rec/s | 230k rec/s |
+| Throughput | 311k rec/s | 261k rec/s | 230k rec/s |
+| Peak RSS | 2.6 GB | 0.6 GB | 0.3 GB |
 
 Reproduce with `voidai bench` and `voidai bench --real <capture>`.
 
 **Where it falls short, stated plainly.** Alert burden is too high — 184
 findings/hour on the short capture, with the true positive at rank 358 of 395.
-Ranking and precision, not sensitivity, are the open problem. And scenario 3
-peaked at 7.2GB of RAM, which does not fit the Pi 5 this project claims to
-target. Both are tracked in [`docs/benchmarks.md`](docs/benchmarks.md), along
-with the three real bugs that only real captures exposed — including a
-beaconing signal that turned out to be measuring an artifact of our own
-synthetic generator.
+Ranking and precision, not sensitivity, are the open problem.
+
+[`docs/benchmarks.md`](docs/benchmarks.md) has the full account, including the
+three real bugs that only real captures exposed — among them a beaconing
+signal that turned out to be measuring an artifact of our own synthetic
+generator, and a textbook flow-orientation rule that silently deleted the one
+true positive in a capture.
 
 ---
 

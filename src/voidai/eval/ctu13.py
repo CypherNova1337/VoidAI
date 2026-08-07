@@ -171,31 +171,42 @@ def evaluate(
 
     receipt = RunReceipt()
     with EnergyMeter() as meter:
-        connections = (
-            scan_labelled_netflow(path).select(_ANALYSIS_COLUMNS).collect(engine="streaming")
-        )
+        # Handed to the analyzer lazily. Collecting here would materialise the
+        # whole capture — 7.2GB on the 66-hour scenario — before any filtering
+        # had a chance to run.
+        scan = scan_labelled_netflow(path).select(_ANALYSIS_COLUMNS)
+
         # Belt and braces: the analyzer must not be able to see ground truth
         # even if a future refactor changes the projection above.
-        assert "label" not in connections.columns, "ground truth leaked into analysis frame"
-        assert set(connections.columns) <= set(CONNECTION_SCHEMA)
+        columns = set(scan.collect_schema().names())
+        assert "label" not in columns, "ground truth leaked into analysis frame"
+        assert columns <= set(CONNECTION_SCHEMA)
 
-        ctx = AnalysisContext(connections=connections)
+        extent = scan.select(
+            pl.len().alias("records"),
+            pl.col("ts").min().alias("first_ts"),
+            pl.col("ts").max().alias("last_ts"),
+        ).collect(engine="streaming")
+
+        records = int(extent["records"][0]) if extent.height else 0
+        ctx = AnalysisContext(connections=scan, known_record_count=records)
         findings = BeaconingAnalyzer(config).analyze(ctx)
 
-    receipt.records_ingested = connections.height
+    receipt.records_ingested = records
     receipt.findings_emitted = len(findings)
     receipt.finalize(meter.reading)
 
-    timestamps = connections["ts"]
     span_hours = (
-        (timestamps.max() - timestamps.min()) / 3600.0 if connections.height else 0.0
+        (extent["last_ts"][0] - extent["first_ts"][0]) / 3600.0
+        if records and extent["first_ts"][0] is not None
+        else 0.0
     )
 
     return RealCaptureResult(
         scenario=scenario,
         findings=findings,
         receipt=receipt,
-        flow_count=connections.height,
+        flow_count=records,
         span_hours=float(span_hours),
         infected_hosts=infected_hosts,
         botnet_pairs=botnet_pairs,

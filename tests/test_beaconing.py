@@ -200,3 +200,60 @@ class TestBeaconingAnalyzer:
     def test_max_findings_is_respected(self, corpus) -> None:  # type: ignore[no-untyped-def]
         analyzer = BeaconingAnalyzer(BeaconingConfig(max_findings=2))
         assert len(analyzer.analyze(AnalysisContext(connections=corpus.connections))) <= 2
+
+
+class TestStreamingEquivalence:
+    """A lazy context must produce byte-identical findings to an eager one.
+
+    The two-pass streaming path exists to keep peak memory proportional to
+    candidate pairs rather than to records — 7.2GB down to 2.7GB on the
+    66-hour CTU-13 scenario. It is only worth having if it changes nothing
+    else, so that equivalence is asserted rather than assumed.
+    """
+
+    def test_lazy_and_eager_findings_are_identical(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        eager = BeaconingAnalyzer().analyze(AnalysisContext(connections=corpus.connections))
+        lazy = BeaconingAnalyzer().analyze(
+            AnalysisContext(connections=corpus.connections.lazy())
+        )
+        assert [f.id for f in eager] == [f.id for f in lazy]
+        assert [f.confidence for f in eager] == [f.confidence for f in lazy]
+
+    def test_lazy_evidence_chain_is_identical(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """Artifact locators must stay aligned with the timestamps they describe.
+
+        Pass 2 sorts each column by `ts` inside the aggregation rather than
+        sorting the frame globally. If that alignment ever broke, an analyst
+        would be handed a line number that does not correspond to the check-in
+        being cited.
+        """
+        eager = BeaconingAnalyzer().analyze(AnalysisContext(connections=corpus.connections))
+        lazy = BeaconingAnalyzer().analyze(
+            AnalysisContext(connections=corpus.connections.lazy())
+        )
+        for left, right in zip(eager, lazy, strict=True):
+            assert left.evidence_ids() == right.evidence_ids()
+            assert [a.id for e in left.evidence for a in e.artifacts] == [
+                a.id for e in right.evidence for a in e.artifacts
+            ]
+
+    def test_artifacts_are_ordered_by_time(self, findings) -> None:  # type: ignore[no-untyped-def]
+        """Sampled artifacts should span the window, earliest first."""
+        for finding in findings:
+            for evidence in finding.evidence:
+                stamps = [a.observed_at for a in evidence.artifacts if a.observed_at]
+                assert stamps == sorted(stamps)
+
+    def test_missing_service_column_does_not_crash(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """NetFlow has no application-layer guess; the filter must adapt."""
+        without = corpus.connections.drop("service").lazy()
+        assert BeaconingAnalyzer().analyze(AnalysisContext(connections=without))
+
+    def test_record_count_uses_the_supplied_figure(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        """A caller that already counted must not pay for a second pass."""
+        ctx = AnalysisContext(connections=corpus.connections.lazy(), known_record_count=42)
+        assert ctx.record_count() == 42
+
+    def test_record_count_falls_back_to_a_scan(self, corpus) -> None:  # type: ignore[no-untyped-def]
+        ctx = AnalysisContext(connections=corpus.connections.lazy())
+        assert ctx.record_count() == corpus.connections.height

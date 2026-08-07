@@ -26,6 +26,8 @@ from voidai.ingest.schema import (
 )
 from voidai.lexicon import Entity, EntityType, Finding
 
+Frame = pl.DataFrame | pl.LazyFrame
+
 
 @dataclass
 class AnalysisContext:
@@ -34,19 +36,59 @@ class AnalysisContext:
     Passing one context to every analyzer, rather than letting each reach for
     files itself, keeps ingestion cost paid once and makes the data an
     analyzer saw reproducible from the context alone.
+
+    Each source may be an eager `DataFrame` or a lazy `LazyFrame`. Analyzers
+    should reach for the `*_scan()` accessors rather than the attributes, so
+    that projection, filtering and aggregation push down into the scan instead
+    of running after the whole capture has been materialised. On the 66-hour
+    CTU-13 scenario that distinction is 7.2GB against a few hundred megabytes
+    — the difference between running on the target hardware and not.
     """
 
-    connections: pl.DataFrame = field(default_factory=lambda: empty(CONNECTION_SCHEMA))
-    dns: pl.DataFrame = field(default_factory=lambda: empty(DNS_SCHEMA))
-    alerts: pl.DataFrame = field(default_factory=lambda: empty(ALERT_SCHEMA))
+    connections: Frame = field(default_factory=lambda: empty(CONNECTION_SCHEMA))
+    dns: Frame = field(default_factory=lambda: empty(DNS_SCHEMA))
+    alerts: Frame = field(default_factory=lambda: empty(ALERT_SCHEMA))
 
     #: Reverse-resolution built from observed DNS answers: ip -> domain.
     ip_to_domain: dict[str, str] = field(default_factory=dict)
     #: Optional asset inventory: ip -> hostname.
     ip_to_host: dict[str, str] = field(default_factory=dict)
 
+    #: Records scanned, when the caller already knows. Avoids a counting pass
+    #: over a lazy source purely to fill in a receipt.
+    known_record_count: int | None = None
+
+    @staticmethod
+    def _scan(frame: Frame) -> pl.LazyFrame:
+        return frame.lazy() if isinstance(frame, pl.DataFrame) else frame
+
+    def connection_scan(self) -> pl.LazyFrame:
+        return self._scan(self.connections)
+
+    def dns_scan(self) -> pl.LazyFrame:
+        return self._scan(self.dns)
+
+    def alert_scan(self) -> pl.LazyFrame:
+        return self._scan(self.alerts)
+
     def record_count(self) -> int:
-        return len(self.connections) + len(self.dns) + len(self.alerts)
+        """Total records available.
+
+        Eager sources answer for free. A lazy source costs one streaming pass,
+        so callers that already know the figure should set
+        `known_record_count` rather than pay for it twice.
+        """
+        if self.known_record_count is not None:
+            return self.known_record_count
+
+        total = 0
+        for frame in (self.connections, self.dns, self.alerts):
+            if isinstance(frame, pl.DataFrame):
+                total += frame.height
+            else:
+                counted = frame.select(pl.len()).collect(engine="streaming")
+                total += int(counted.item()) if counted.height else 0
+        return total
 
     def actor(self, ip: str) -> Entity:
         """Represent a source address as the most specific entity available.

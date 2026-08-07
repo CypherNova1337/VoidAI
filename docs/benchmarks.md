@@ -57,8 +57,8 @@ of real botnet traffic on a university network, every flow labelled `Botnet`,
 | C2 rank among findings | 204 / 1277 | 358 / 395 |
 | Findings per hour | **19.1** | 183.5 |
 | Pair precision | 0.0008 | 0.0025 |
-| Throughput | 272,649 rec/s | 286,778 rec/s |
-| Peak RSS | **7,165 MB** | 1,308 MB |
+| Throughput | 310,801 rec/s | 260,846 rec/s |
+| Peak RSS | 2,653 MB | 558 MB |
 
 Scenario 3's C2 channel (`147.32.84.165 → 38.229.70.20`) is found at 0.958
 confidence — genuinely strong. Scenario 6's Menti channel
@@ -91,8 +91,8 @@ and how much noise came with it.
 scenario 6 the true positive sits at rank 358 of 395 — technically detected,
 operationally invisible.
 
-**This is the top open problem.** Ranking and precision, not sensitivity, are
-what stand between this analyzer and something a SOC would run. Lowering the
+**This is now the top open problem.** Ranking and precision, not sensitivity,
+are what stand between this analyzer and something a SOC would run. Lowering the
 score threshold to catch `jittered-15m` would make it strictly worse.
 
 A large share of the noise is genuinely periodic benign traffic: SNMP polling
@@ -170,15 +170,47 @@ source port is lower. Findings fell to 395 and the C2 survived. A real service
 listening above 32768 and contacted from a lower port still produces spurious
 pairs; that is the accepted cost of never discarding a real channel.
 
-### Memory does not survive contact with 12.7M flows
+### Memory did not survive contact with 12.7M flows
 
-Scenario 3 peaked at **7,165 MB**. The Pi 5 target has 8GB total. The claim
-that this runs on a Pi does not currently hold at that scale.
+Scenario 3 originally peaked at **7,165 MB** — more than the Pi 5 target has
+in total. The cause was materialising the whole capture before grouping: the
+per-pair arrays of timestamps and byte counts hold every record in the file.
 
-The cause is materialising the whole capture before grouping. Polars can
-stream a `group_by`, so pushing the aggregation into the lazy frame should
-hold the working set roughly flat. Not yet done, and it is tracked as the
-second open problem after alert ranking.
+Now split into two streaming passes:
+
+  **Pass 1** groups to one row per (src, dst, port) carrying only scalars — a
+  count and a first/last timestamp. Enough to decide which pairs could
+  possibly qualify, cheap enough to stream.
+
+  **Pass 2** re-scans, semi-joins to the survivors, and gathers full arrays
+  for those alone.
+
+On scenario 3, pass 1 yields 1,123,519 pairs, of which **15,737 (1.4%)**
+survive the count-and-span gate. Pass 2 therefore collects a fortieth of what
+the single-pass version held.
+
+| | before | after |
+|---|---|---|
+| Peak RSS | 7,165 MB | **2,653 MB** |
+| Wall time | 46.5s | **40.8s** |
+| Throughput | 272,649 rec/s | 310,801 rec/s |
+| Findings | 1277 | 1277 (identical) |
+
+Faster despite reading twice, because nothing large is ever materialised.
+Findings are byte-identical, asserted by a test rather than assumed.
+
+**What remains.** 2,653 MB is Polars' hash state for the pass-1 `group_by`
+over 1.12M distinct keys — the summary frame it produces is only 53 MB. Thread
+count barely moves it (2,042 MB at one thread against 2,093 MB at four, for a
+4x speed difference), so it is inherent to the aggregation rather than to
+parallelism.
+
+That fits an 8GB Pi 5 but not a 4GB board. Splitting pass 1 into time windows
+and merging partial summaries would fix it — counts sum and min/max combine,
+so the merge is exact — but CSV has no random access, so windowing means
+either re-parsing per window or moving to a batched reader. A Pi deployment
+would realistically process hourly or daily windows rather than 66 hours in
+one shot, which is the same fix arriving from the operational direction.
 
 ### Parsing was 21x slower than it needed to be
 

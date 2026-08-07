@@ -260,11 +260,41 @@ class BeaconingAnalyzer(BaseAnalyzer):
     # --- pipeline ---------------------------------------------------------
 
     def analyze(self, ctx: AnalysisContext) -> list[Finding]:
-        pairs = self._group_pairs(ctx.connections)
-        if pairs.is_empty():
+        """Two streaming passes over the capture, neither materialising it.
+
+        The naive shape — collect everything, then group — costs memory
+        proportional to the capture, because the per-pair arrays of timestamps
+        and byte counts hold every record in the file. On the 66-hour CTU-13
+        scenario that peaked at 7.2GB, more than the Pi 5 this project targets
+        has in total.
+
+        Splitting it fixes that:
+
+          Pass 1  group to one row per pair carrying only scalars — a count
+                  and a first/last timestamp. Cheap enough to stream, and
+                  enough to decide which pairs could possibly qualify.
+          Pass 2  re-scan, keeping only those surviving pairs, and gather the
+                  full arrays for them alone.
+
+        Almost every pair fails the count-and-span gate, so pass 2 collects a
+        tiny fraction of the capture. The cost is reading twice; the saving is
+        that peak memory tracks the number of *candidate pairs* rather than
+        the number of records.
+        """
+        scan = ctx.connection_scan().drop_nulls(subset=["ts", "src_ip", "dst_ip"])
+
+        summary = self._pair_summary(scan)
+        if summary.is_empty():
             return []
 
-        prevalence = self._destination_prevalence(ctx.connections)
+        prevalence = self._destination_prevalence(summary)
+        candidates = self._candidates(summary)
+        if candidates.is_empty():
+            return []
+
+        pairs = self._collect_series(scan, candidates)
+        if pairs.is_empty():
+            return []
 
         scored: list[tuple[BeaconScore, dict[str, object]]] = []
         for row in pairs.iter_rows(named=True):
@@ -283,61 +313,100 @@ class BeaconingAnalyzer(BaseAnalyzer):
             for score, row in scored[: self.config.max_findings]
         ]
 
-    def _destination_prevalence(self, connections: pl.DataFrame) -> dict[str, int]:
+    # --- pass 1: scalar summary per pair ----------------------------------
+
+    def _pair_summary(self, scan: pl.LazyFrame) -> pl.DataFrame:
+        """One row per (src, dst, port), carrying only scalars.
+
+        Deliberately computed before the ignore-port filter. Destination
+        prevalence is a property of the environment, and excluding NTP here
+        would shrink the denominator and make ordinary infrastructure look
+        rare.
+        """
+        return (
+            scan.group_by(["src_ip", "dst_ip", "dst_port"])
+            .agg(
+                pl.len().alias("n"),
+                pl.col("ts").min().alias("first_ts"),
+                pl.col("ts").max().alias("last_ts"),
+            )
+            .collect(engine="streaming")
+        )
+
+    def _destination_prevalence(self, summary: pl.DataFrame) -> dict[str, int]:
         """How many distinct hosts contact each destination.
 
-        Computed over the whole capture rather than the filtered subset: a
-        destination's prevalence across the estate is a property of the
-        environment, and narrowing the denominator would make rare-looking
-        destinations out of ordinary ones.
+        Derived from the pass-1 summary rather than from a third scan: the
+        summary already holds one row per (src, dst, port), so counting
+        distinct sources per destination is a small in-memory aggregation.
         """
-        if connections.is_empty():
+        if summary.is_empty():
             return {}
-        counts = (
-            connections.drop_nulls(subset=["src_ip", "dst_ip"])
-            .group_by("dst_ip")
-            .agg(pl.col("src_ip").n_unique().alias("hosts"))
-        )
+        counts = summary.group_by("dst_ip").agg(pl.col("src_ip").n_unique().alias("hosts"))
         return dict(zip(counts["dst_ip"].to_list(), counts["hosts"].to_list(), strict=True))
 
-    def _group_pairs(self, connections: pl.DataFrame) -> pl.DataFrame:
-        """Collapse connections into per-(src, dst, port) arrays.
+    def _candidates(self, summary: pl.DataFrame) -> pl.DataFrame:
+        """Pairs that could possibly qualify, on count and span alone.
 
-        Only the four columns the scorer needs are carried through the
-        aggregation. On a 10M-row conn.log this is the difference between a
-        few hundred megabytes and several gigabytes of intermediate state —
-        which matters when the target has 8GB total.
+        Both gates are the ones `score_pair` applies anyway, hoisted forward so
+        that pass 2 never gathers arrays for a pair destined to be rejected.
         """
-        if connections.is_empty():
-            return connections
-
-        frame = connections.drop_nulls(subset=["ts", "src_ip", "dst_ip"])
-
+        candidates = summary.filter(
+            (pl.col("n") >= self.config.min_connections)
+            & ((pl.col("last_ts") - pl.col("first_ts")) >= self.config.min_span_seconds)
+        )
         if self.config.ignore_ports:
-            frame = frame.filter(
+            candidates = candidates.filter(
                 pl.col("dst_port").is_null()
                 | ~pl.col("dst_port").is_in(list(self.config.ignore_ports))
             )
-        if self.config.ignore_services and "service" in frame.columns:
-            frame = frame.filter(
+        return candidates.select("src_ip", "dst_ip", "dst_port")
+
+    # --- pass 2: full arrays, candidates only -----------------------------
+
+    def _collect_series(self, scan: pl.LazyFrame, candidates: pl.DataFrame) -> pl.DataFrame:
+        """Gather timestamps, byte counts and artifact locators per candidate.
+
+        A semi-join restricts the scan to surviving pairs before aggregation,
+        so the list columns never hold the whole capture. `nulls_equal` keeps
+        pairs whose destination port is null — ICMP, mostly — which a default
+        join would silently drop.
+
+        Each column is sorted by `ts` inside the aggregation rather than the
+        frame being globally sorted first. The scoring maths sorts timestamps
+        itself, but the artifact locators must stay aligned with the
+        timestamps they describe, and a full sort of the capture is exactly
+        the kind of work this refactor exists to avoid.
+        """
+        filtered = scan
+        # Sensors differ in which columns they populate; NetFlow has no
+        # application-layer guess at all. Resolving the schema first costs
+        # nothing — it reads no data — and keeps a missing column a degraded
+        # signal rather than a crash.
+        available = set(scan.collect_schema().names())
+        if self.config.ignore_services and "service" in available:
+            filtered = filtered.filter(
                 pl.col("service").is_null()
                 | ~pl.col("service").str.to_lowercase().is_in(list(self.config.ignore_services))
             )
 
-        if frame.is_empty():
-            return frame
-
         return (
-            frame.sort("ts")
+            filtered.join(
+                candidates.lazy(),
+                on=["src_ip", "dst_ip", "dst_port"],
+                how="semi",
+                nulls_equal=True,
+            )
             .group_by(["src_ip", "dst_ip", "dst_port"])
             .agg(
-                pl.col("ts"),
-                pl.col("orig_bytes"),
-                pl.col("source_file"),
-                pl.col("source_line"),
+                pl.col("ts").sort_by("ts"),
+                pl.col("orig_bytes").sort_by("ts"),
+                pl.col("source_file").sort_by("ts"),
+                pl.col("source_line").sort_by("ts"),
                 pl.len().alias("n"),
             )
             .filter(pl.col("n") >= self.config.min_connections)
+            .collect(engine="streaming")
         )
 
     # --- evidence construction -------------------------------------------
