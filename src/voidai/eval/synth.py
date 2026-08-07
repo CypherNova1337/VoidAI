@@ -58,6 +58,9 @@ class Implant:
     jitter_fraction: float
     payload_bytes: int
     label: str
+    #: "symmetric" for uniform jitter either side of the period; "scheduled"
+    #: for the hard-floor, right-tailed shape real captures exhibit.
+    jitter_model: str = "symmetric"
 
     @property
     def key(self) -> tuple[str, str, int]:
@@ -147,8 +150,41 @@ class CorpusGenerator:
             return np.array([])
         return np.sort(np.concatenate(timestamps))
 
+    def _scheduled(
+        self,
+        duration: float,
+        period: float,
+        jitter: float,
+        miss_rate: float = 0.03,
+    ) -> np.ndarray:
+        """Arrivals from a real implant: a hard floor with a right tail.
+
+        Modelled on the CTU-13 Menti channel, whose observed intervals sit at
+        q1=33.0s, q2=33.3s, q3=42.4s — an extremely tight lower edge with a
+        long tail running out to five times the base period.
+
+        The shape follows from how implants actually work. A beacon told to
+        sleep thirty seconds cannot wake in twenty; scheduler slack, network
+        latency and a dropped check-in only ever push the next arrival later.
+        The symmetric `uniform(+/-jitter)` model in `_periodic` cannot produce
+        that asymmetry, and a detector validated only against it learns a
+        property of the generator rather than a property of malware.
+        """
+        timestamps: list[float] = []
+        t = 0.0
+        while t < duration:
+            timestamps.append(t)
+            t += period * (1.0 + abs(self.rng.normal(0.0, jitter)))
+            if self.rng.random() < miss_rate:
+                t += period  # a missed check-in doubles the gap
+        return np.array(timestamps)
+
     def _periodic(self, duration: float, period: float, jitter: float) -> np.ndarray:
-        """Regular arrivals with uniform jitter — beacons and pollers alike."""
+        """Regular arrivals with symmetric uniform jitter.
+
+        Kept alongside `_scheduled` deliberately: some implant families do
+        jitter symmetrically, and the detector has to handle both shapes.
+        """
         count = max(int(duration / period), 1)
         base = np.arange(count) * period
         if jitter > 0:
@@ -250,10 +286,22 @@ class CorpusGenerator:
             Implant("10.0.1.17", "185.220.101.9", 8443, 300.0, 0.10, 1024, "jittered-5m"),
             Implant("10.0.1.11", "141.98.11.4", 443, 900.0, 0.25, 380, "jittered-15m"),
             Implant("10.0.1.19", "194.26.29.87", 80, 1800.0, 0.50, 256, "low-and-slow-30m"),
+            Implant(
+                "10.0.1.13", "45.129.14.22", 443, 33.0, 0.18, 640,
+                "scheduled-33s-menti-like", jitter_model="scheduled",
+            ),
+            Implant(
+                "10.0.1.16", "179.43.160.8", 8080, 600.0, 0.30, 900,
+                "scheduled-10m", jitter_model="scheduled",
+            ),
         ]
         for implant in implants:
-            timestamps = self._periodic(
-                duration, implant.period_seconds, implant.jitter_fraction
+            timestamps = (
+                self._scheduled(duration, implant.period_seconds, implant.jitter_fraction)
+                if implant.jitter_model == "scheduled"
+                else self._periodic(
+                    duration, implant.period_seconds, implant.jitter_fraction
+                )
             )
             # Check-in payloads vary only slightly: a task poll plus framing.
             sizes = self.rng.normal(implant.payload_bytes, implant.payload_bytes * 0.06, size=timestamps.size)

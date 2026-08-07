@@ -165,13 +165,81 @@ def run(
         _render_receipt(run_receipt)
 
 
+def _bench_real(path: Path, limit: int) -> None:
+    """Score against a labelled real capture — currently the CTU-13 dialect.
+
+    Reported separately from the synthetic benchmark and never averaged with
+    it. See docs/benchmarks.md for why pair precision reads near zero here and
+    what it does and does not mean.
+    """
+    from voidai.analyzers.beaconing import BeaconingConfig
+    from voidai.eval.ctu13 import SCENARIOS, Scenario, evaluate
+
+    scenario = next(
+        (s for key, s in SCENARIOS.items() if key in path.name or s.filename == path.name),
+        Scenario(key="unknown", filename=path.name, malware="unknown", duration_hours=0.0),
+    )
+
+    console.print(f"[dim]Scoring {path.name} ({scenario.malware})…[/dim]")
+    result = evaluate(path, scenario, config=BeaconingConfig(max_findings=limit))
+
+    detected = result.true_positive_pairs
+    ranked = sorted((f.confidence for f in result.findings), reverse=True)
+    best = max((f.confidence for f in result.findings
+                if (f.subject.value, f.object.value) in result.botnet_pairs), default=None)
+
+    table = Table(title="Real capture", title_justify="left", show_header=False)
+    table.add_column(style="dim")
+    table.add_column()
+    table.add_row("capture", f"{escape(path.name)} · {scenario.malware}")
+    table.add_row("volume", f"{result.flow_count:,} flows over {result.span_hours:.2f}h")
+    table.add_row(
+        "infected host",
+        (
+            f"[green]detected[/green] — {', '.join(sorted(result.flagged_infected_hosts))}"
+            if result.infected_host_detected
+            else "[red]not detected[/red]"
+        ),
+    )
+    if best is not None:
+        table.add_row("c2 confidence", f"{best:.3f} (rank {ranked.index(best) + 1} of {len(ranked)})")
+    table.add_row(
+        "alert burden",
+        f"{len(result.findings)} findings · [{'yellow' if result.findings_per_hour > 20 else 'green'}]"
+        f"{result.findings_per_hour:.1f}/hour[/]",
+    )
+    table.add_row("pair precision", f"{result.pair_precision:.4f} ({len(detected)} on labelled pairs)")
+    table.add_row(
+        "ground truth",
+        f"{len(result.botnet_pairs):,} botnet pairs · {len(result.infected_hosts)} infected hosts",
+    )
+    console.print()
+    console.print(table)
+    console.print(
+        "\n[dim]'Background' in CTU-13 means unlabelled, not benign, so pair precision is a "
+        "lower bound rather than an estimate. See docs/benchmarks.md.[/dim]"
+    )
+    _render_receipt(result.receipt)
+
+
 @app.command()
 def bench(
     seed: int = typer.Option(1337, help="Corpus seed. Same seed, same corpus, forever."),
     hours: float = typer.Option(24.0, help="Hours of synthetic telemetry to generate."),
+    real: Path | None = typer.Option(
+        None, "--real", help="Score against a labelled real capture instead (CTU-13 format)."
+    ),
+    limit: int = typer.Option(100_000, help="Cap on findings emitted, highest-scoring first."),
 ) -> None:
     """Score the analyzers against a labelled corpus, and meter the run."""
     from voidai.eval.benchmark import run_benchmark
+
+    if real is not None:
+        if not real.is_file():
+            console.print(f"[red]No such capture:[/red] {real}")
+            raise typer.Exit(code=2)
+        _bench_real(real, limit)
+        return
 
     console.print(f"[dim]Generating {hours:g}h corpus (seed {seed})…[/dim]")
     result = run_benchmark(seed=seed, hours=hours)

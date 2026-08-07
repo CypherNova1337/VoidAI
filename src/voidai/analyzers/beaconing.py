@@ -8,7 +8,8 @@ Six independent measurements are taken over each source→destination pair and
 combined with a weighted geometric mean:
 
     interval regularity   how tightly inter-arrival times cluster (MAD/median)
-    interval symmetry     Bowley skewness — jitter is symmetric, humans skew
+    schedule floor        tightness of the lower quartile — timers have a
+                          hard floor and a soft ceiling; people have neither
     payload uniformity    check-ins carry near-constant bytes; browsing does not
     periodicity           binned autocorrelation, which survives missed check-ins
     persistence           coverage of the observation window, without gaps
@@ -38,18 +39,20 @@ import polars as pl
 from voidai.analyzers.base import AnalysisContext, BaseAnalyzer
 from voidai.analyzers.statistics import (
     autocorrelation_at_period,
-    bowley_skewness,
+    bimodal_gap_threshold,
+    coalesce_bursts,
     coefficient_of_dispersion,
     destination_rarity,
     median_absolute_deviation,
     saturating,
+    schedule_floor_dispersion,
     weighted_geometric_mean,
 )
 from voidai.lexicon import Artifact, Evidence, Finding, Predicate, Severity
 
 _WEIGHTS = {
     "interval_regularity": 0.26,
-    "interval_symmetry": 0.12,
+    "schedule_floor": 0.12,
     "payload_uniformity": 0.20,
     "periodicity": 0.18,
     "persistence": 0.12,
@@ -76,6 +79,13 @@ class BeaconingConfig:
     max_interval_dispersion: float = 0.6
     #: Payload dispersion at which the uniformity score reaches zero.
     max_size_dispersion: float = 0.5
+    #: Lower-quartile spread at which the schedule-floor score reaches zero.
+    #: Calibrated across both jitter models rather than one: a symmetrically
+    #: jittered beacon at +/-50% sits at 0.33, while human browsing sits near
+    #: 0.59. 0.6 keeps the wide separation between scheduled and interactive
+    #: traffic without punishing the symmetric case that a tighter bound
+    #: would have discarded.
+    max_floor_dispersion: float = 0.6
     #: Sample count beyond which more samples add little confidence.
     #: Kept low deliberately: a 30-minute beacon can only check in 48 times a
     #: day, and that is the ceiling for its period, not a weakness in it.
@@ -106,12 +116,14 @@ class BeaconScore:
     components: dict[str, float]
     period_seconds: float
     interval_dispersion: float
-    interval_skewness: float
+    floor_dispersion: float
     median_bytes: float
     size_dispersion: float
     autocorrelation: float | None
     contacting_hosts: int
     sample_count: int
+    raw_record_count: int
+    burst_threshold: float | None
     span_seconds: float
     coverage: float
     first_seen: float
@@ -120,10 +132,17 @@ class BeaconScore:
     def basis(self) -> str:
         """A one-line, checkable justification for the confidence score."""
         parts = ", ".join(f"{k}={v:.2f}" for k, v in sorted(self.components.items()))
+        coalesced = ""
+        if self.burst_threshold is not None:
+            coalesced = (
+                f"; {self.raw_record_count} records coalesced into {self.sample_count} "
+                f"check-ins at a {self.burst_threshold:.2f}s burst gap"
+            )
         return (
-            f"weighted geometric mean of [{parts}] over {self.sample_count} connections "
+            f"weighted geometric mean of [{parts}] over {self.sample_count} check-ins "
             f"spanning {self.span_seconds / 3600:.1f}h; "
             f"period={self.period_seconds:.1f}s, jitter={self.interval_dispersion:.1%}"
+            f"{coalesced}"
         )
 
 
@@ -140,12 +159,25 @@ def score_pair(
     periodic traffic.
     """
     timestamps = np.sort(np.asarray(timestamps, dtype=np.float64))
-    sample_count = int(timestamps.size)
-    if sample_count < config.min_connections:
+    sizes_in = np.asarray(payload_bytes, dtype=np.float64)
+    if sizes_in.size != timestamps.size:
+        sizes_in = np.full(timestamps.size, np.nan)
+
+    span = float(timestamps[-1] - timestamps[0]) if timestamps.size else 0.0
+    if span < config.min_span_seconds:
         return None
 
-    span = float(timestamps[-1] - timestamps[0])
-    if span < config.min_span_seconds:
+    # Collapse burst structure before measuring anything. One check-in often
+    # arrives as several telemetry records — see `bimodal_gap_threshold` — and
+    # every statistic below would otherwise describe record framing rather
+    # than the beacon. A no-op on well-formed connection logs.
+    raw_count = int(timestamps.size)
+    burst_threshold = bimodal_gap_threshold(np.diff(timestamps))
+    if burst_threshold is not None:
+        timestamps, sizes_in = coalesce_bursts(timestamps, sizes_in, burst_threshold)
+
+    sample_count = int(timestamps.size)
+    if sample_count < config.min_connections:
         return None
 
     intervals = np.diff(timestamps)
@@ -161,16 +193,15 @@ def score_pair(
     interval_dispersion = coefficient_of_dispersion(intervals)
     regularity = 1.0 - min(1.0, interval_dispersion / config.max_interval_dispersion)
 
-    skewness = bowley_skewness(intervals)
-    symmetry = 1.0 - min(1.0, abs(skewness))
+    floor_dispersion = schedule_floor_dispersion(intervals)
+    schedule_floor = 1.0 - min(1.0, floor_dispersion / config.max_floor_dispersion)
 
     components: dict[str, float] = {
         "interval_regularity": regularity,
-        "interval_symmetry": symmetry,
+        "schedule_floor": schedule_floor,
     }
 
-    sizes = np.asarray(payload_bytes, dtype=np.float64)
-    sizes = sizes[np.isfinite(sizes)]
+    sizes = sizes_in[np.isfinite(sizes_in)]
     if sizes.size >= 3:
         size_dispersion = coefficient_of_dispersion(sizes)
         median_bytes = float(np.median(sizes))
@@ -202,12 +233,14 @@ def score_pair(
         components=components,
         period_seconds=period,
         interval_dispersion=interval_dispersion,
-        interval_skewness=skewness,
+        floor_dispersion=floor_dispersion,
         median_bytes=median_bytes,
         size_dispersion=size_dispersion,
         autocorrelation=autocorrelation,
         contacting_hosts=contacting_hosts,
         sample_count=sample_count,
+        raw_record_count=raw_count,
+        burst_threshold=burst_threshold,
         span_seconds=span,
         coverage=coverage,
         first_seen=float(timestamps[0]),
@@ -353,7 +386,7 @@ class BeaconingAnalyzer(BaseAnalyzer):
             payload={
                 "period_seconds": round(score.period_seconds, 3),
                 "interval_dispersion": round(score.interval_dispersion, 4),
-                "interval_skewness": round(score.interval_skewness, 4),
+                "floor_dispersion": round(score.floor_dispersion, 4),
                 "autocorrelation": (
                     round(score.autocorrelation, 4)
                     if score.autocorrelation is not None
@@ -363,6 +396,12 @@ class BeaconingAnalyzer(BaseAnalyzer):
                 "sample_count": score.sample_count,
                 "span_seconds": round(score.span_seconds, 1),
                 "contacting_hosts": score.contacting_hosts,
+                "raw_record_count": score.raw_record_count,
+                "burst_threshold_seconds": (
+                    round(score.burst_threshold, 3)
+                    if score.burst_threshold is not None
+                    else None
+                ),
             },
             artifacts=artifacts,
         )

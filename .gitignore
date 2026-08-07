@@ -17,6 +17,10 @@ models/
 *.bin
 *.safetensors
 
+# Capture corpora. Freely redistributable from the sources in
+# docs/benchmarks.md, but 1.7GB and not ours to vendor.
+data/
+
 # Local run artifacts
 runs/
 *.log

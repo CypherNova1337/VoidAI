@@ -74,22 +74,35 @@ the model's job.**
 
 | Agent | Method | Status |
 |---|---|---|
-| **C2 Beaconing Analyzer** | Six-signal ensemble: interval regularity, Bowley symmetry, payload uniformity, adaptive-bin autocorrelation, coverage, estate-wide destination rarity | **working** |
+| **C2 Beaconing Analyzer** | Six-signal ensemble: interval regularity, schedule-floor tightness, payload uniformity, adaptive-bin autocorrelation, coverage, estate-wide destination rarity — over burst-coalesced arrivals | **working** |
 | **DNS Tunnelling Detector** | Label entropy, subdomain cardinality, NXDOMAIN ratio, qtype skew | planned |
 | **Suricata Alert Triage** | Alert deduplication, entity clustering, priority reranking | planned |
 | **Web Attack Detector** | Signature + statistical hybrid over access logs | planned |
 | **Hunt Query Generator** | Confirmed incident → Sigma / KQL / SPL / Zeek | planned |
 
-On the seeded 24-hour benchmark corpus — four implants from textbook-60s to a
-50%-jittered low-and-slow, hidden among browsing traffic, a monitoring agent,
-an update checker, and NTP:
+### Measured, on real malware traffic
 
-```
-precision 1.000 · recall 1.000 · f1 1.000        (4 TP · 0 FP · 0 FN)
-55,983 records → 4 findings in 0.24s             (230,628 rec/s, x86_64, 4 cores)
-```
+Validated against [CTU-13](https://www.stratosphereips.org/datasets-ctu13) —
+real botnet captures on a university network, with per-flow ground truth.
 
-Reproduce with `voidai bench`. Same seed, same corpus, same numbers.
+| | CTU-13 #3 (Rbot, 66.8h) | CTU-13 #6 (Menti, 2.15h) | Synthetic (24h) |
+|---|---|---|---|
+| Flows | 12,689,947 | 1,916,655 | 55,983 |
+| Infected host found | **yes** | **yes** | 5 of 6 implants |
+| C2 confidence | **0.958** | 0.749 | — |
+| Findings / hour | 19.1 | 183.5 | — |
+| Throughput | 272k rec/s | 287k rec/s | 230k rec/s |
+
+Reproduce with `voidai bench` and `voidai bench --real <capture>`.
+
+**Where it falls short, stated plainly.** Alert burden is too high — 184
+findings/hour on the short capture, with the true positive at rank 358 of 395.
+Ranking and precision, not sensitivity, are the open problem. And scenario 3
+peaked at 7.2GB of RAM, which does not fit the Pi 5 this project claims to
+target. Both are tracked in [`docs/benchmarks.md`](docs/benchmarks.md), along
+with the three real bugs that only real captures exposed — including a
+beaconing signal that turned out to be measuring an artifact of our own
+synthetic generator.
 
 ---
 
@@ -141,12 +154,18 @@ Core install pulls six runtime dependencies and needs no compiler.
 ```bash
 voidai run ./zeek-logs/                 # detection pipeline over a log directory
 voidai run ./zeek-logs/ --evidence      # print the full evidence chain per finding
-voidai bench                            # reproducible accuracy + energy benchmark
+voidai bench                            # seeded synthetic accuracy + energy benchmark
+voidai bench --real <capture>           # score against a labelled real capture
 voidai lexicon                          # print the complete grammar
 voidai version                          # version and detected power profile
 ```
 
 Every command prints a run receipt unless given `--no-receipt`.
+
+## Documentation
+
+- [`docs/benchmarks.md`](docs/benchmarks.md) — measured accuracy, energy, and
+  what real captures changed about the design
 
 ## Licence
 

@@ -7,11 +7,13 @@ import pytest
 
 from voidai.analyzers.statistics import (
     autocorrelation_at_period,
-    bowley_skewness,
+    bimodal_gap_threshold,
+    coalesce_bursts,
     coefficient_of_dispersion,
     destination_rarity,
     median_absolute_deviation,
     saturating,
+    schedule_floor_dispersion,
     shannon_entropy,
     weighted_geometric_mean,
 )
@@ -62,22 +64,37 @@ class TestCoefficientOfDispersion:
         assert coefficient_of_dispersion(np.array([])) == 1.0
 
 
-class TestBowleySkewness:
-    def test_symmetric_distribution(self) -> None:
-        assert bowley_skewness(np.linspace(0, 100, 101)) == pytest.approx(0.0, abs=1e-9)
+class TestScheduleFloorDispersion:
+    def test_perfect_schedule_has_no_floor_spread(self) -> None:
+        assert schedule_floor_dispersion(np.full(100, 60.0)) == 0.0
 
-    def test_right_skew_is_positive(self) -> None:
+    def test_tolerates_a_long_right_tail(self) -> None:
+        """The property real captures forced: missed check-ins must not count.
+
+        A beacon whose intervals are tight at 30s but which occasionally
+        stalls to 60s, 90s or 150s is still obviously scheduled.
+        """
+        intervals = np.concatenate([np.full(180, 30.0), [60.0, 90.0, 150.0, 300.0]])
+        assert schedule_floor_dispersion(intervals) < 0.05
+
+    def test_interactive_traffic_has_a_ragged_floor(self) -> None:
         rng = np.random.default_rng(2)
-        assert bowley_skewness(rng.exponential(10, 2000)) > 0.1
+        assert schedule_floor_dispersion(rng.exponential(10, 2000)) > 0.3
 
-    def test_bounded(self) -> None:
+    def test_scale_invariant(self) -> None:
+        rng = np.random.default_rng(9)
+        base = rng.normal(60, 6, 500)
+        assert schedule_floor_dispersion(base) == pytest.approx(
+            schedule_floor_dispersion(base * 10), rel=1e-9
+        )
+
+    def test_never_negative(self) -> None:
         rng = np.random.default_rng(3)
-        for sample in (rng.exponential(5, 500), rng.normal(0, 1, 500), rng.pareto(1.5, 500)):
-            assert -1.0 <= bowley_skewness(sample) <= 1.0
+        for sample in (rng.exponential(5, 500), rng.pareto(1.5, 500), np.full(50, 7.0)):
+            assert schedule_floor_dispersion(sample) >= 0.0
 
     def test_degenerate_input(self) -> None:
-        assert bowley_skewness(np.array([1.0, 2.0])) == 0.0
-        assert bowley_skewness(np.full(50, 7.0)) == 0.0
+        assert schedule_floor_dispersion(np.array([1.0, 2.0])) == 0.0
 
 
 class TestAutocorrelationAtPeriod:
@@ -185,3 +202,99 @@ class TestShannonEntropy:
 
     def test_uniform_alphabet_approaches_log2_of_size(self) -> None:
         assert shannon_entropy("abcd" * 25) == pytest.approx(2.0, abs=1e-9)
+
+
+class TestBimodalGapThreshold:
+    """Burst coalescing: the fix real captures forced.
+
+    A 33-second beacon arrives as hundreds of NetFlow records whose median
+    interval is 0.15s. Without this the period is measured from record framing
+    rather than from the beacon.
+    """
+
+    def test_recovers_the_true_period_from_burst_structure(self) -> None:
+        """Asserts the outcome rather than the threshold value.
+
+        What matters is that coalescing at the returned threshold recovers the
+        33-second beacon; where exactly in the valley the cut falls does not.
+        """
+        rng = np.random.default_rng(0)
+        arrivals = []
+        for check_in in range(120):
+            base = check_in * 33.0
+            arrivals.extend(base + rng.uniform(0, 0.12, size=3))  # 3 records per check-in
+        timestamps = np.sort(np.array(arrivals))
+
+        # Uncoalesced, the median interval describes record framing, not the beacon.
+        assert np.median(np.diff(timestamps)) < 1.0
+
+        threshold = bimodal_gap_threshold(np.diff(timestamps))
+        assert threshold is not None
+        starts, _ = coalesce_bursts(timestamps, np.ones(timestamps.size), threshold)
+        # Coalescing need not be perfect — an occasional burst splits — but the
+        # recovered period must describe the beacon rather than record framing.
+        assert abs(starts.size - 120) <= 2
+        assert np.median(np.diff(starts)) == pytest.approx(33.0, abs=0.5)
+
+    def test_unimodal_series_is_left_alone(self) -> None:
+        """Well-formed connection logs must pass through untouched."""
+        assert bimodal_gap_threshold(np.diff(np.arange(400) * 60.0)) is None
+
+    def test_jittered_unimodal_series_is_left_alone(self) -> None:
+        rng = np.random.default_rng(3)
+        arrivals = np.sort(np.arange(300) * 300.0 + rng.uniform(-30, 30, 300))
+        assert bimodal_gap_threshold(np.diff(arrivals)) is None
+
+    def test_a_single_long_gap_is_not_a_mode(self) -> None:
+        """One overnight pause must not be promoted to a second cluster."""
+        intervals = np.concatenate([np.full(300, 60.0), [40_000.0]])
+        assert bimodal_gap_threshold(intervals) is None
+
+    def test_survives_values_bridging_the_valley(self) -> None:
+        """Why Otsu, and not the largest gap between sorted intervals.
+
+        A handful of intermediate intervals appear in every real capture. A
+        single-gap rule silently fails on them; weighing the whole
+        distribution does not.
+        """
+        rng = np.random.default_rng(1)
+        tight = rng.uniform(0.05, 0.2, size=200)
+        spaced = rng.uniform(25.0, 45.0, size=180)
+        bridging = np.array([0.5, 2.0, 5.0, 12.0])  # the values that broke it
+        assert bimodal_gap_threshold(np.concatenate([tight, spaced, bridging])) is not None
+
+    def test_too_few_samples(self) -> None:
+        assert bimodal_gap_threshold(np.array([0.1, 30.0, 0.1])) is None
+
+
+class TestCoalesceBursts:
+    def test_returns_burst_start_times(self) -> None:
+        timestamps = np.array([0.0, 0.1, 0.2, 30.0, 30.1, 60.0])
+        starts, _ = coalesce_bursts(timestamps, np.ones(6), threshold=1.0)
+        assert starts.tolist() == [0.0, 30.0, 60.0]
+
+    def test_sums_values_across_each_burst(self) -> None:
+        """Payload must describe a whole check-in, not one fragment of it."""
+        timestamps = np.array([0.0, 0.1, 30.0, 30.1, 30.2])
+        _, totals = coalesce_bursts(timestamps, np.array([10.0, 5.0, 1.0, 2.0, 3.0]), 1.0)
+        assert totals.tolist() == [15.0, 6.0]
+
+    def test_no_bursts_leaves_the_series_unchanged(self) -> None:
+        timestamps = np.arange(10) * 60.0
+        starts, totals = coalesce_bursts(timestamps, np.ones(10), threshold=1.0)
+        assert starts.tolist() == timestamps.tolist()
+        assert totals.tolist() == [1.0] * 10
+
+    def test_sorts_unordered_input(self) -> None:
+        starts, _ = coalesce_bursts(np.array([30.0, 0.0, 0.1]), np.ones(3), 1.0)
+        assert starts.tolist() == [0.0, 30.0]
+
+    def test_nan_values_do_not_poison_the_sums(self) -> None:
+        _, totals = coalesce_bursts(
+            np.array([0.0, 0.1, 30.0]), np.array([5.0, np.nan, 7.0]), 1.0
+        )
+        assert totals.tolist() == [5.0, 7.0]
+
+    def test_empty_input(self) -> None:
+        starts, totals = coalesce_bursts(np.array([]), np.array([]), 1.0)
+        assert starts.size == 0 and totals.size == 0

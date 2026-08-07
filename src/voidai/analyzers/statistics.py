@@ -49,21 +49,35 @@ def coefficient_of_dispersion(values: np.ndarray) -> float:
     return median_absolute_deviation(values) / abs(median)
 
 
-def bowley_skewness(values: np.ndarray) -> float:
-    """Quartile-based skewness, bounded to [-1, 1].
+def schedule_floor_dispersion(values: np.ndarray) -> float:
+    """Spread of the *lower* half of an interval distribution, scale-free.
 
-    Automated check-ins produce a symmetric interval distribution: jitter is
-    applied evenly around a target period. Human-driven traffic skews right,
-    with a long tail of idle gaps. Unlike the third-moment skewness this needs
-    no variance and does not explode on outliers.
+    A scheduled process has a hard floor and a soft ceiling. An implant told to
+    sleep thirty seconds cannot call home in twenty — but it can easily take
+    sixty, because a check-in was missed, the host slept, or the network
+    stalled. So the informative part of the distribution is its bottom edge:
+    tight for anything driven by a timer, ragged for anything driven by a
+    person.
+
+    Measured as `(q2 - q1) / q2`, which is near zero for a scheduler and large
+    for interactive traffic.
+
+    This replaces an earlier symmetry test built on Bowley skewness, which was
+    wrong in a way only real captures revealed. Synthetic beacons generated
+    with `uniform(±jitter)` are symmetric by construction, so the measure
+    scored perfectly against them and looked strong. Real command-and-control
+    is heavily *right*-skewed — the CTU-13 Menti channel scores +0.95, its long
+    tail being missed check-ins at two, three, and five times the base period.
+    The old measure therefore penalised precisely the evidence it should have
+    rewarded. Judging the floor instead is both more discriminating and easier
+    to justify to an analyst.
     """
     if values.size < 4:
         return 0.0
-    q1, q2, q3 = (float(x) for x in np.percentile(values, [25, 50, 75]))
-    spread = q3 - q1
-    if spread < _EPS:
-        return 0.0  # a perfectly tight distribution is perfectly symmetric
-    return (q1 + q3 - 2 * q2) / spread
+    q1, q2 = (float(x) for x in np.percentile(values, [25, 50]))
+    if q2 < _EPS:
+        return 1.0
+    return max(0.0, (q2 - q1) / q2)
 
 
 def autocorrelation_at_period(
@@ -136,6 +150,119 @@ def autocorrelation_at_period(
         correlation = float(np.dot(signal[:-lag], signal[lag:])) / energy
         best = max(best, correlation)
     return float(np.clip(best, 0.0, 1.0))
+
+
+def bimodal_gap_threshold(
+    intervals: np.ndarray,
+    min_separation_decades: float = 1.0,
+    min_mass: float = 0.10,
+    bins: int = 64,
+) -> float | None:
+    """Find the valley separating intra-burst from inter-burst intervals.
+
+    One logical check-in rarely arrives as one telemetry record. NetFlow
+    exporters emit a record per direction and split long connections at the
+    active timeout; Zeek logs a separate connection for each TCP session in a
+    keep-alive sequence. The result is that a 33-second beacon appears as
+    hundreds of records whose *median* interval is 0.15 seconds, and every
+    statistic computed downstream then describes record framing rather than
+    the beacon.
+
+    Such a series is strongly bimodal in log space: a tight cluster of
+    near-zero intra-burst gaps, a wide valley, then the true period. The split
+    is found with Otsu's method — the threshold maximising between-class
+    variance.
+
+    Otsu rather than the largest gap between consecutive sorted intervals: a
+    handful of intermediate values bridge the valley in real captures (a
+    retransmit here, a truncated flow there), and any single-gap rule silently
+    fails on exactly the traffic this is meant to fix. Otsu weighs the whole
+    distribution, so a few bridging samples cannot hide the split.
+
+    Because Otsu always returns *some* threshold, two guards decide whether
+    there is really anything to split:
+
+      `min_separation_decades` — the class means must differ by this much,
+        so a merely broad unimodal distribution is not carved in half.
+      `min_mass` — each class must hold this share of the samples, so one
+        outlying gap cannot be promoted to a mode of its own.
+
+    Returns `None` when neither holds, which is the common case for
+    well-formed connection logs: no valley, no coalescing, no change in
+    behaviour. Only telemetry that needs the correction receives it.
+    """
+    positive = intervals[intervals > 0]
+    if positive.size < 8:
+        return None
+
+    log_intervals = np.log10(positive)
+    spread = float(log_intervals.max() - log_intervals.min())
+    if spread < min_separation_decades:
+        return None  # everything within one decade: nothing to separate
+
+    counts, edges = np.histogram(log_intervals, bins=bins)
+    centres = (edges[:-1] + edges[1:]) / 2.0
+    total = counts.sum()
+    if total == 0:
+        return None
+
+    weights = counts / total
+    # Cumulative mass and mean below each candidate split.
+    mass_below = np.cumsum(weights)[:-1]
+    mass_above = 1.0 - mass_below
+    mean_total = float(np.dot(weights, centres))
+    mean_below_cum = np.cumsum(weights * centres)[:-1]
+
+    valid = (mass_below > 0) & (mass_above > 0)
+    if not valid.any():
+        return None
+
+    between_variance = np.where(
+        valid,
+        (mean_total * mass_below - mean_below_cum) ** 2 / np.maximum(mass_below * mass_above, _EPS),
+        -1.0,
+    )
+    split = int(np.argmax(between_variance))
+
+    below = log_intervals[log_intervals <= centres[split]]
+    above = log_intervals[log_intervals > centres[split]]
+    if below.size == 0 or above.size == 0:
+        return None
+
+    share = min(below.size, above.size) / log_intervals.size
+    separation = float(above.mean() - below.mean())
+    if separation < min_separation_decades or share < min_mass:
+        return None
+
+    return float(10 ** centres[split])
+
+
+def coalesce_bursts(
+    timestamps: np.ndarray,
+    values: np.ndarray,
+    threshold: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Collapse runs of closely-spaced events into one event each.
+
+    Returns the timestamp that *started* each burst, paired with the summed
+    values across it. The start is the meaningful instant — it is when the
+    implant decided to call home — and summing bytes keeps the payload figure
+    describing one whole check-in rather than one fragment of it.
+    """
+    if timestamps.size == 0:
+        return timestamps, values
+
+    order = np.argsort(timestamps)
+    timestamps, values = timestamps[order], values[order]
+
+    is_start = np.concatenate([[True], np.diff(timestamps) > threshold])
+    starts = timestamps[is_start]
+
+    # Sum values within each burst via the cumulative sum at burst boundaries.
+    group = np.cumsum(is_start) - 1
+    totals = np.bincount(group, weights=np.nan_to_num(values, nan=0.0))
+
+    return starts, totals
 
 
 def destination_rarity(contacting_hosts: int) -> float:
