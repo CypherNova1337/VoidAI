@@ -16,7 +16,8 @@ from rich.table import Table
 from rich.text import Text
 
 from voidai import __version__
-from voidai.analyzers import AnalysisContext, BeaconingAnalyzer
+from voidai.analyzers import AnalysisContext, BeaconingAnalyzer, FanoutAnalyzer
+from voidai.correlate import IncidentQueue, build_queue
 from voidai.ingest.zeek import load_connections, load_dns
 from voidai.lexicon import GRAMMAR, EntityType, Finding, Severity
 from voidai.telemetry import EnergyMeter, RunReceipt, detect_platform
@@ -87,6 +88,58 @@ def _render_evidence(findings: list[Finding]) -> None:
                 console.print(f"      [dim]… and {len(evidence.artifacts) - 3} more[/dim]")
 
 
+def _render_queue(queue: IncidentQueue, limit: int = 20) -> None:
+    """Print the analyst-facing queue, highest priority first.
+
+    Incidents rather than findings, because a host is the unit a responder
+    works in, and because ranking by corroboration is what separates a
+    compromised machine from a merely periodic one.
+    """
+    if not len(queue):
+        console.print("\n[green]No incidents.[/green] Nothing met threshold.\n")
+        return
+
+    table = Table(
+        title=f"{len(queue)} incident(s) · {len(queue.corroborated)} corroborated",
+        title_justify="left",
+        expand=True,
+    )
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Severity", no_wrap=True)
+    table.add_column("Prio", justify="right", no_wrap=True)
+    table.add_column("Subject", no_wrap=True)
+    table.add_column("Behaviours", no_wrap=True)
+    table.add_column("Findings", justify="right", no_wrap=True)
+
+    for position, ranked in enumerate(queue.top(limit), start=1):
+        behaviours = ", ".join(p.value for p in ranked.corroborating_predicates)
+        multiple = len(ranked.corroborating_predicates) > 1
+        table.add_row(
+            str(position),
+            _severity_text(ranked.incident.severity),
+            f"{ranked.priority:.2f}",
+            escape(str(ranked.subject)),
+            f"[bold yellow]{escape(behaviours)}[/bold yellow]" if multiple else escape(behaviours),
+            str(len(ranked.incident.findings)),
+        )
+
+    console.print()
+    console.print(table)
+    if len(queue) > limit:
+        console.print(f"[dim]… {len(queue) - limit} lower-priority incidents not shown[/dim]")
+
+    corroborated = queue.corroborated
+    if corroborated:
+        console.print("\n[bold]Corroborated — more than one independent behaviour[/bold]")
+        for ranked in corroborated[:5]:
+            console.print(f"\n  [bold]{escape(str(ranked.subject))}[/bold]")
+            console.print(f"  [dim]{escape(ranked.rationale)}[/dim]")
+            for finding in ranked.incident.findings[:4]:
+                console.print(
+                    f"    {finding.confidence:.2f}  {escape(finding.sentence())}"
+                )
+
+
 def _render_receipt(receipt: RunReceipt) -> None:
     energy = receipt.energy
     table = Table(title="Run receipt", title_justify="left", show_header=False, expand=False)
@@ -141,7 +194,8 @@ def run(
         connections = load_connections(path)
         dns = load_dns(path)
         ctx = AnalysisContext(connections=connections, dns=dns)
-        findings = BeaconingAnalyzer().analyze(ctx)
+        findings = BeaconingAnalyzer().analyze(ctx) + FanoutAnalyzer().analyze(ctx)
+        queue = build_queue(findings)
 
     run_receipt.records_ingested = ctx.record_count()
     run_receipt.findings_emitted = len(findings)
@@ -151,7 +205,7 @@ def run(
         console.print(f"[yellow]No parseable telemetry found under[/yellow] {path}")
         raise typer.Exit(code=1)
 
-    _render_findings(findings)
+    _render_queue(queue)
     if evidence:
         _render_evidence(findings)
 
@@ -203,10 +257,21 @@ def _bench_real(path: Path, limit: int) -> None:
     )
     if best is not None:
         table.add_row("c2 confidence", f"{best:.3f} (rank {ranked.index(best) + 1} of {len(ranked)})")
+    rank = result.best_infected_rank
+    table.add_row(
+        "queue position",
+        (
+            f"[green]rank {rank} of {len(result.queue)}[/green]"
+            if rank is not None and rank <= 5
+            else f"rank {rank} of {len(result.queue)}"
+            if rank is not None
+            else "[red]absent from queue[/red]"
+        ),
+    )
     table.add_row(
         "alert burden",
-        f"{len(result.findings)} findings · [{'yellow' if result.findings_per_hour > 20 else 'green'}]"
-        f"{result.findings_per_hour:.1f}/hour[/]",
+        f"{len(result.findings)} findings → {len(result.queue)} incidents, "
+        f"{len(result.queue.corroborated)} corroborated",
     )
     table.add_row("pair precision", f"{result.pair_precision:.4f} ({len(detected)} on labelled pairs)")
     table.add_row(
@@ -219,6 +284,7 @@ def _bench_real(path: Path, limit: int) -> None:
         "\n[dim]'Background' in CTU-13 means unlabelled, not benign, so pair precision is a "
         "lower bound rather than an estimate. See docs/benchmarks.md.[/dim]"
     )
+    _render_queue(result.queue, limit=10)
     _render_receipt(result.receipt)
 
 

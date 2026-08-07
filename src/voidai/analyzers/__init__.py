@@ -2,9 +2,10 @@
 
 from voidai.analyzers.base import AnalysisContext, Analyzer, BaseAnalyzer
 from voidai.analyzers.beaconing import BeaconingAnalyzer, BeaconingConfig, BeaconScore, score_pair
+from voidai.analyzers.fanout import FanoutAnalyzer, FanoutConfig, FanoutScore, score_fanout
 
 #: Analyzers run by `voidai run` unless a subset is requested.
-DEFAULT_ANALYZERS: tuple[type[BaseAnalyzer], ...] = (BeaconingAnalyzer,)
+DEFAULT_ANALYZERS: tuple[type[BaseAnalyzer], ...] = (BeaconingAnalyzer, FanoutAnalyzer)
 
 __all__ = [
     "DEFAULT_ANALYZERS",
@@ -14,5 +15,9 @@ __all__ = [
     "BeaconScore",
     "BeaconingAnalyzer",
     "BeaconingConfig",
+    "FanoutAnalyzer",
+    "FanoutConfig",
+    "FanoutScore",
+    "score_fanout",
     "score_pair",
 ]

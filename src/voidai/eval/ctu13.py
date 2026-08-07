@@ -45,10 +45,17 @@ from pathlib import Path
 
 import polars as pl
 
-from voidai.analyzers import AnalysisContext, BeaconingAnalyzer, BeaconingConfig
+from voidai.analyzers import (
+    AnalysisContext,
+    BeaconingAnalyzer,
+    BeaconingConfig,
+    FanoutAnalyzer,
+    FanoutConfig,
+)
+from voidai.correlate import IncidentQueue, build_queue
 from voidai.ingest.netflow import LABEL_BOTNET, scan_labelled_netflow
 from voidai.ingest.schema import CONNECTION_SCHEMA
-from voidai.lexicon import Finding
+from voidai.lexicon import Finding, Predicate
 from voidai.telemetry import EnergyMeter, RunReceipt
 
 #: Columns the analyzers need. Projecting early keeps the 1.4GB scenarios
@@ -116,6 +123,21 @@ class RealCaptureResult:
     infected_hosts: set[str] = field(default_factory=set)
     botnet_pairs: set[tuple[str, str]] = field(default_factory=set)
     flagged_pairs: list[tuple[str, str]] = field(default_factory=list)
+    queue: IncidentQueue = field(default_factory=IncidentQueue)
+
+    @property
+    def best_infected_rank(self) -> int | None:
+        """Best queue position held by a host the labels call compromised.
+
+        The measure that actually matters. A true positive at rank 2 gets
+        worked; the same true positive at rank 358 does not.
+        """
+        ranks = [
+            rank
+            for host in self.infected_hosts
+            if (rank := self.queue.rank_of(host)) is not None
+        ]
+        return min(ranks) if ranks else None
 
     @property
     def true_positive_pairs(self) -> list[tuple[str, str]]:
@@ -190,7 +212,11 @@ def evaluate(
 
         records = int(extent["records"][0]) if extent.height else 0
         ctx = AnalysisContext(connections=scan, known_record_count=records)
+
         findings = BeaconingAnalyzer(config).analyze(ctx)
+        cap = config.max_findings if config else FanoutConfig().max_findings
+        findings += FanoutAnalyzer(FanoutConfig(max_findings=cap)).analyze(ctx)
+        queue = build_queue(findings)
 
     receipt.records_ingested = records
     receipt.findings_emitted = len(findings)
@@ -210,7 +236,10 @@ def evaluate(
         span_hours=float(span_hours),
         infected_hosts=infected_hosts,
         botnet_pairs=botnet_pairs,
+        queue=queue,
         flagged_pairs=[
-            (f.subject.value, f.object.value if f.object else "") for f in findings
+            (f.subject.value, f.object.value if f.object else "")
+            for f in findings
+            if f.predicate is Predicate.BEACONS_TO
         ],
     )

@@ -55,16 +55,18 @@ of real botnet traffic on a university network, every flow labelled `Botnet`,
 | **Infected host detected** | **yes** | **yes** |
 | C2 confidence | **0.958** | 0.749 |
 | C2 rank among findings | 204 / 1277 | 358 / 395 |
-| Findings per hour | **19.1** | 183.5 |
-| Pair precision | 0.0008 | 0.0025 |
-| Throughput | 310,801 rec/s | 260,846 rec/s |
-| Peak RSS | 2,653 MB | 558 MB |
+| **Infected host queue rank** | **2 / 214** | **1 / 133** |
+| Findings → incidents | 1328 → 214 | 397 → 133 |
+| Corroborated incidents | 3 | 1 |
+| Beaconing pair precision | 0.0008 | 0.0025 |
+| Throughput | 223,651 rec/s | 219,088 rec/s |
+| Peak RSS | 2,672 MB | 634 MB |
 
 Scenario 3's C2 channel (`147.32.84.165 → 38.229.70.20`) is found at 0.958
 confidence — genuinely strong. Scenario 6's Menti channel
 (`147.32.84.165 → 91.212.135.158:5678`) is found at 0.749, near the threshold.
 
-### Why "precision" is near zero, and why that number is not what it looks like
+### Why beaconing "precision" is near zero, and why that number is not what it looks like
 
 Two things make the raw figure misleading in *both* directions, so it is
 reported as-is and explained rather than massaged.
@@ -85,22 +87,56 @@ periodic" and then measuring whether periodic traffic is found would score
 So the honest measures are: was the compromised host surfaced (yes, in both),
 and how much noise came with it.
 
-### Alert burden is the real problem
+### Alert burden, and how it was fixed
 
-19 findings/hour over 66 hours is borderline. 184/hour is unusable. And on
-scenario 6 the true positive sits at rank 358 of 395 — technically detected,
-operationally invisible.
+The first version of this page reported the real problem: 184 findings/hour on
+scenario 6, with the true positive at **rank 358 of 395**. Detected and
+invisible are the same thing to an analyst working a queue.
 
-**This is now the top open problem.** Ranking and precision, not sensitivity,
-are what stand between this analyzer and something a SOC would run. Lowering the
-score threshold to catch `jittered-15m` would make it strictly worse.
+The instinct is to tighten the detector. That is wrong, and the data says so.
+The high-scoring findings that outranked the C2 are *genuinely* beacon-like —
+perfectly regular, uniform payload, single-host destinations. They are
+monitoring agents, backup jobs and keep-alives. No refinement of a periodicity
+measure separates them, because on the axis of periodicity they are not
+different.
 
-A large share of the noise is genuinely periodic benign traffic: SNMP polling
-on port 161 (40 findings on scenario 6), internal monitoring, backup jobs,
-and P2P. 37% of scenario 6's findings point *inside* the university network.
-Suppressing these is a deployment-time decision that needs environment
-context — an asset inventory, a business-hours model, a baseline — which is
-what the correlation layer is for.
+**What separates a compromised host is that it does more than one suspicious
+thing.** The scenario 6 host beacons every 33 seconds *and* mails 1,573
+distinct destinations on port 25 — rank 1 of 143,546 (host, port) pairs for
+fan-out. Scenario 3's beacons *and* sweeps 26,702 hosts on port 22, where
+seven of the top ten fan-out pairs in the whole capture are infected hosts.
+
+So a second analyzer was added (`fanout`, the `SCANS` predicate) and ranking
+moved out of the analyzers into `voidai.correlate`. A `Finding` answers "how
+beacon-like is this traffic?"; an `Incident` answers "how much should an
+analyst care about this host?" Conflating those two questions is what buried
+the true positive.
+
+| | scenario 3 | scenario 6 |
+|---|---|---|
+| Before — C2 finding rank | 204 / 1277 | 358 / 395 |
+| **After — infected host queue rank** | **2 / 214** | **1 / 133** |
+| Findings → incidents | 1328 → 214 | 397 → 133 |
+| Corroborated incidents | 3 | 1 |
+
+Adding the second analyzer costs about 25% in wall time (223k rec/s against
+310k for beaconing alone) and nothing in memory.
+
+On scenario 3 the three corroborated incidents are, in order: a resolver or
+gateway reaching 162,612 destinations, **the actual bot**, and a BitTorrent
+client on port 6881. An analyst triaging three incidents finds it immediately.
+
+Ranking is by noisy-OR over the strongest finding *per predicate*, multiplied
+by a corroboration bonus. Per-predicate deliberately: twenty beaconing
+findings on one host are twenty views of one behaviour, not twenty independent
+reasons to believe it, and treating them as independent would let a chatty
+analyzer manufacture certainty.
+
+The remaining noise is still genuinely periodic benign traffic — SNMP polling
+on port 161, internal monitoring, backups, P2P. It is no longer *ranked above
+the intrusion*, which was the operational problem. Suppressing it outright
+needs environment context: an asset inventory, a business-hours model, a
+baseline.
 
 ---
 
@@ -221,7 +257,26 @@ output.
 
 ---
 
-## 4. Energy
+## 4. What is still open
+
+**Corroboration needs more than two opinions.** Two analyzers give a binary
+signal: corroborated or not. Scenario 3's three corroborated incidents are the
+bot, a resolver, and a BitTorrent client — enough to find the intrusion in
+three lines, but a DNS-tunnelling or alert-triage analyzer would let the
+ranking discriminate *within* that set rather than leaving it to the analyst.
+
+**The estate has no identity.** VoidAI does not know which of its hosts is a
+mail relay, a resolver, or a domain controller. `147.32.84.229` ranks first on
+scenario 3 because it reaches 162,612 destinations, which is exactly what a
+gateway does. An asset inventory would demote it in one step, and the
+`AnalysisContext` already carries `ip_to_host` for exactly this.
+
+**Memory on a 4GB board.** 2,672 MB fits an 8GB Pi 5 but not a 4GB one. See
+section 3.
+
+---
+
+## 5. Energy
 
 Every figure on this page was produced on x86_64 with **estimated** energy —
 this container exposes no RAPL counters, and the fallback profile deliberately
@@ -234,7 +289,7 @@ verified.
 
 ---
 
-## 5. Reproducing
+## 6. Reproducing
 
 ```bash
 # Synthetic — no download required

@@ -39,8 +39,9 @@ findings are not something it is able to author freely.
 
 ```
    telemetry ──▶  Ingest  ──▶  Analyzers  ──▶  Correlate  ──▶  Reason  ──▶  Propose
-                 (parsers)    (statistics,     (entity        (small      (analyst
-                              no model)         graph)         model)      approves)
+                 (parsers)    (statistics,     (per-host      (small      (analyst
+                              no model)         incidents,     model)      approves)
+                                                ranked)
                                         │
                     Lexicon ────────────┴──────── binds every stage
                                         │
@@ -75,6 +76,8 @@ the model's job.**
 | Agent | Method | Status |
 |---|---|---|
 | **C2 Beaconing Analyzer** | Six-signal ensemble: interval regularity, schedule-floor tightness, payload uniformity, adaptive-bin autocorrelation, coverage, estate-wide destination rarity — over burst-coalesced arrivals | **working** |
+| **Fan-out / Scan Detector** | Destination breadth against revisit rate, per port | **working** |
+| **Correlation & ranking** | Findings → per-host incidents, ordered by noisy-OR across independent behaviours | **working** |
 | **DNS Tunnelling Detector** | Label entropy, subdomain cardinality, NXDOMAIN ratio, qtype skew | planned |
 | **Suricata Alert Triage** | Alert deduplication, entity clustering, priority reranking | planned |
 | **Web Attack Detector** | Signature + statistical hybrid over access logs | planned |
@@ -85,20 +88,23 @@ the model's job.**
 Validated against [CTU-13](https://www.stratosphereips.org/datasets-ctu13) —
 real botnet captures on a university network, with per-flow ground truth.
 
-| | CTU-13 #3 (Rbot, 66.8h) | CTU-13 #6 (Menti, 2.15h) | Synthetic (24h) |
-|---|---|---|---|
-| Flows | 12,689,947 | 1,916,655 | 55,983 |
-| Infected host found | **yes** | **yes** | 5 of 6 implants |
-| C2 confidence | **0.958** | 0.749 | — |
-| Findings / hour | 19.1 | 183.5 | — |
-| Throughput | 311k rec/s | 261k rec/s | 230k rec/s |
-| Peak RSS | 2.6 GB | 0.6 GB | 0.3 GB |
+| | CTU-13 #3 (Rbot, 66.8h) | CTU-13 #6 (Menti, 2.15h) |
+|---|---|---|
+| Flows | 12,689,947 | 1,916,655 |
+| **Infected host, queue rank** | **2 of 214** | **1 of 133** |
+| Findings → incidents | 1328 → 214 | 397 → 133 |
+| Corroborated incidents | 3 | 1 |
+| Throughput | 224k rec/s | 219k rec/s |
+| Peak RSS | 2.6 GB | 0.6 GB |
 
 Reproduce with `voidai bench` and `voidai bench --real <capture>`.
 
-**Where it falls short, stated plainly.** Alert burden is too high — 184
-findings/hour on the short capture, with the true positive at rank 358 of 395.
-Ranking and precision, not sensitivity, are the open problem.
+**Ranking is the whole game.** Beaconing alone put the scenario 6 C2 at rank
+358 of 395 — detected and invisible are the same thing to an analyst working a
+queue. The fix was not a better periodicity measure: the findings outranking
+it were *genuinely* beacon-like monitoring agents and backup jobs. What
+separates a compromised host is that it does several suspicious things at
+once. A second analyzer plus correlation by corroboration moved it to rank 1.
 
 [`docs/benchmarks.md`](docs/benchmarks.md) has the full account, including the
 three real bugs that only real captures exposed — among them a beaconing
