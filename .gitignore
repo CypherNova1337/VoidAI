@@ -20,8 +20,10 @@ models/
 # Capture corpora. Freely redistributable from the sources in
 # docs/benchmarks.md, but 1.7GB and not ours to vendor.
 data/
+!tests/data/
 
 # Local run artifacts
 runs/
 *.log
+!tests/data/
 !tests/data/**/*.log

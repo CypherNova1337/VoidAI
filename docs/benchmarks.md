@@ -302,13 +302,29 @@ fixes above are about grounding rather than filtering.
 
 ---
 
-## 5. DNS tunnelling — synthetic only
+## 5. DNS tunnelling — real specificity, synthetic sensitivity
 
-**This analyzer has not been validated against a real capture**, and that is
-stated first because it is the only component of which it is true. CTU-13 is
-NetFlow and carries no query names; no comparable labelled DNS-tunnelling
-corpus was reachable. The figures below are measured against synthesised
-traffic modelled on published tool behaviour.
+Validation here is split, and the halves are reported separately because they
+rest on different evidence.
+
+**False positives: measured on real traffic.** The Stratosphere malware
+captures ship `passivedns` logs alongside their NetFlow, and those carry real
+query names. Across **3,655 records from 18 hosts** — Akamai CNAME chains,
+Mozilla update services, Google notification endpoints, OneNote CDN, telemetry
+and certificate status lookups — the analyzer emits **nothing**. Only one zone
+even passed the volume gates (`google.com`, scoring 0.065 against a 0.62
+threshold).
+
+This is the half that decides whether the analyzer is deployable, and it is
+the half no generator can honestly test: real DNS is stranger than anything
+worth writing by hand. A 400-record excerpt is committed as
+`tests/data/real.passivedns` (CC-BY, Stratosphere IPS) so the result is
+regression-tested rather than reported once.
+
+**True positives: synthetic only.** No labelled DNS-tunnelling corpus was
+reachable, so sensitivity is measured against traffic modelled on published
+tool behaviour. That distinction is not blurred: the analyzer is *known* not
+to fire on real benign DNS, and *believed* to fire on real tunnels.
 
 The generator is adversarial: benign traffic includes a content delivery
 network minting 300 subdomains per host, hex-encoded reputation lookups, and
@@ -323,7 +339,8 @@ DNSBL queries — the categories that break entropy detectors.
 | `akamaiedge.net` (CDN) | 300 | 3.39 | 0.268 |
 | `blocklist-example.org` (DNSBL) | 200 | 3.03 | 0.080 |
 
-3 of 3 tunnels found, no false positives, at a 0.62 threshold.
+3 of 3 tunnels found, no false positives, at a 0.62 threshold — and zero
+findings across the real traffic above.
 
 **The margin on reputation lookups is thin — 0.05.** Hex encoding tops out at
 4.0 bits/char against base32's 5.0, and that gap is the only thing separating

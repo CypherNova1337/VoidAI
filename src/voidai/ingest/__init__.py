@@ -1,5 +1,6 @@
 """Parsers: vendor formats in, normalised frames out."""
 
+from voidai.ingest.passivedns import load_passivedns, read_passivedns
 from voidai.ingest.schema import (
     ALERT_SCHEMA,
     CONNECTION_SCHEMA,
@@ -24,6 +25,8 @@ __all__ = [
     "empty",
     "load_connections",
     "load_dns",
+    "load_passivedns",
     "read_conn_log",
     "read_dns_log",
+    "read_passivedns",
 ]

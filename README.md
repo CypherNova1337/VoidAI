@@ -84,14 +84,17 @@ the model's job.**
 | **Correlation & ranking** | Findings → per-host incidents, ordered by noisy-OR across independent behaviours | **working** |
 | **Language layer** | Token-budgeted evidence brief → grammar-constrained small model → claim verifier | **working** |
 | **DNS Tunnelling Detector** | Label entropy, subdomain cardinality, query length, qtype skew | **working** ¹ |
+| **PassiveDNS / Zeek DNS ingest** | Real query names from Stratosphere captures | **working** |
 | **Suricata Alert Triage** | Alert deduplication, entity clustering, priority reranking | planned |
 | **Web Attack Detector** | Signature + statistical hybrid over access logs | planned |
 | **Hunt Query Generator** | Confirmed incident → Sigma / KQL / SPL / Zeek | planned |
 
-¹ Validated against synthetic traffic only. CTU-13 is NetFlow and carries no
-query names, and no comparable labelled DNS-tunnelling corpus was available.
-Everything else in this table is measured on real malware traffic, and the
-difference is recorded rather than blurred.
+¹ Split validation, reported separately. **False positives are measured on
+real traffic**: zero findings across 3,655 real DNS records from 18 hosts —
+Akamai chains, update services, telemetry, certificate status lookups. **True
+positives are synthetic**, since no labelled tunnelling corpus was reachable.
+So the analyzer is *known* not to fire on real benign DNS, and *believed* to
+fire on real tunnels. The difference is recorded rather than blurred.
 
 ### Measured, on real malware traffic
 
