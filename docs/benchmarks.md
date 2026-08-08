@@ -302,13 +302,51 @@ fixes above are about grounding rather than filtering.
 
 ---
 
-## 5. What is still open
+## 5. DNS tunnelling — synthetic only
 
-**Corroboration needs more than two opinions.** Two analyzers give a binary
-signal: corroborated or not. Scenario 3's three corroborated incidents are the
-bot, a resolver, and a BitTorrent client — enough to find the intrusion in
-three lines, but a DNS-tunnelling or alert-triage analyzer would let the
-ranking discriminate *within* that set rather than leaving it to the analyst.
+**This analyzer has not been validated against a real capture**, and that is
+stated first because it is the only component of which it is true. CTU-13 is
+NetFlow and carries no query names; no comparable labelled DNS-tunnelling
+corpus was reachable. The figures below are measured against synthesised
+traffic modelled on published tool behaviour.
+
+The generator is adversarial: benign traffic includes a content delivery
+network minting 300 subdomains per host, hex-encoded reputation lookups, and
+DNSBL queries — the categories that break entropy detectors.
+
+| Zone | Queries | Entropy (bits/char) | Score |
+|---|---|---|---|
+| `tunnel-example.com` (iodine-like, TXT) | 600 | 4.55 | **0.911** |
+| `exfil-example.org` (chunked labels) | 380 | 4.57 | **0.891** |
+| `c2-example.net` (dnscat2-like, A only) | 450 | 4.35 | **0.783** |
+| `reputation-example.net` (hex hashes) | 250 | 3.87 | 0.569 |
+| `akamaiedge.net` (CDN) | 300 | 3.39 | 0.268 |
+| `blocklist-example.org` (DNSBL) | 200 | 3.03 | 0.080 |
+
+3 of 3 tunnels found, no false positives, at a 0.62 threshold.
+
+**The margin on reputation lookups is thin — 0.05.** Hex encoding tops out at
+4.0 bits/char against base32's 5.0, and that gap is the only thing separating
+a hash-lookup service from a tunnel. The threshold is deliberately *not*
+widened to make the number look better: with no real corpus, tuning it would
+mean calibrating against a generator written by the same hand as the
+detector, which is precisely the error section 3 documents. The margin is
+pinned by a test instead, so a regression is visible.
+
+Two consequences follow honestly: a tunnel that encodes in hex would likely be
+missed, and a reputation service using longer or denser encodings could false
+positive. Both wait on real data.
+
+---
+
+## 6. What is still open
+
+**Corroboration is still coarse.** A third analyzer (DNS tunnelling) now
+exists and three-way corroboration ranks correctly on synthetic traffic, but
+CTU-13 carries no DNS query names, so on the real captures the signal remains
+two-valued. A fourth analyzer over host or alert telemetry would let ranking
+discriminate *within* the corroborated set rather than leaving that to the
+analyst.
 
 **The estate has no identity.** VoidAI does not know which of its hosts is a
 mail relay, a resolver, or a domain controller. `147.32.84.229` ranks first on
@@ -321,7 +359,7 @@ section 3.
 
 ---
 
-## 6. Energy
+## 7. Energy
 
 Every figure on this page was produced on x86_64 with **estimated** energy —
 this container exposes no RAPL counters, and the fallback profile deliberately
@@ -334,7 +372,7 @@ verified.
 
 ---
 
-## 7. Reproducing
+## 8. Reproducing
 
 ```bash
 # Synthetic — no download required

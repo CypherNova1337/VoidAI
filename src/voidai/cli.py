@@ -7,6 +7,7 @@ line of it, not a dashboard.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import typer
@@ -16,7 +17,13 @@ from rich.table import Table
 from rich.text import Text
 
 from voidai import __version__
-from voidai.analyzers import AnalysisContext, BeaconingAnalyzer, FanoutAnalyzer
+from voidai.analyzers import (
+    DEFAULT_ANALYZERS,
+    AnalysisContext,
+    BeaconingAnalyzer,
+    DnsTunnelAnalyzer,
+    FanoutAnalyzer,
+)
 from voidai.correlate import IncidentQueue, build_queue
 from voidai.ingest.zeek import load_connections, load_dns
 from voidai.lexicon import GRAMMAR, EntityType, Finding, Severity
@@ -241,7 +248,11 @@ def run(
         connections = load_connections(path)
         dns = load_dns(path)
         ctx = AnalysisContext(connections=connections, dns=dns)
-        findings = BeaconingAnalyzer().analyze(ctx) + FanoutAnalyzer().analyze(ctx)
+        findings = (
+            BeaconingAnalyzer().analyze(ctx)
+            + FanoutAnalyzer().analyze(ctx)
+            + DnsTunnelAnalyzer().analyze(ctx)
+        )
         queue = build_queue(findings)
 
     run_receipt.records_ingested = ctx.record_count()
@@ -438,6 +449,79 @@ def lexicon() -> None:
     console.print(
         f"\n[dim]{len(GRAMMAR)} predicates. An assertion outside this set has no "
         "representation and cannot reach an analyst.[/dim]\n"
+    )
+
+
+@app.command()
+def doctor(
+    model: Path | None = typer.Option(None, "--model", help="GGUF model to check for."),
+) -> None:
+    """Pre-flight check: platform, energy source, optional components.
+
+    Written for bring-up on new hardware. The question that matters on a Pi is
+    whether energy will be *measured* or *estimated*, and this answers it
+    before a benchmark is run rather than after.
+    """
+    from voidai.telemetry.power import (
+        EstimatedSource,
+        HwmonSource,
+        RaplSource,
+        best_available_source,
+    )
+
+    table = Table(title="VoidAI pre-flight", title_justify="left", show_header=False)
+    table.add_column(style="dim")
+    table.add_column()
+
+    profile = detect_platform()
+    table.add_row("version", __version__)
+    table.add_row("platform", escape(profile.name))
+    table.add_row("machine", f"{os.uname().machine} · {os.cpu_count() or 1} cores")
+
+    source = best_available_source()
+    measured = not isinstance(source, EstimatedSource)
+    table.add_row(
+        "energy",
+        f"[green]measured[/green] — {escape(source.method)}"
+        if measured
+        else f"[yellow]estimated[/yellow] — {escape(source.method)}",
+    )
+    if not measured:
+        table.add_row(
+            "",
+            "[dim]RAPL: "
+            + ("present but unreadable" if Path("/sys/class/powercap").is_dir() else "absent")
+            + f"; hwmon power rails: {len(HwmonSource.available())} found"
+            + f"; RAPL domains: {len(RaplSource.available())}[/dim]",
+        )
+        table.add_row("", "[dim]see docs/deployment.md to wire a shunt for real figures[/dim]")
+
+    try:
+        import llama_cpp
+
+        table.add_row("llama-cpp", f"[green]installed[/green] ({llama_cpp.__version__})")
+    except ImportError:
+        table.add_row("llama-cpp", "[yellow]absent[/yellow] — narrative layer disabled")
+
+    if model is not None:
+        size = model.stat().st_size / 1e9 if model.is_file() else 0.0
+        table.add_row(
+            "model",
+            f"[green]{escape(model.name)}[/green] ({size:.1f} GB)"
+            if model.is_file()
+            else f"[red]not found:[/red] {escape(str(model))}",
+        )
+    else:
+        table.add_row("model", "[dim]none given — pass --model to check one[/dim]")
+
+    table.add_row("analyzers", ", ".join(a.name for a in DEFAULT_ANALYZERS))
+    table.add_row("predicates", f"{len(GRAMMAR)} in the Lexicon")
+
+    console.print()
+    console.print(table)
+    console.print(
+        "\n[dim]Energy reads 'estimated' unless a real counter is present. An estimate "
+        "is never reported as a measurement.[/dim]\n"
     )
 
 

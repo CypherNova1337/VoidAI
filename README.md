@@ -83,10 +83,15 @@ the model's job.**
 | **Fan-out / Scan Detector** | Destination breadth against revisit rate, per port | **working** |
 | **Correlation & ranking** | Findings → per-host incidents, ordered by noisy-OR across independent behaviours | **working** |
 | **Language layer** | Token-budgeted evidence brief → grammar-constrained small model → claim verifier | **working** |
-| **DNS Tunnelling Detector** | Label entropy, subdomain cardinality, NXDOMAIN ratio, qtype skew | planned |
+| **DNS Tunnelling Detector** | Label entropy, subdomain cardinality, query length, qtype skew | **working** ¹ |
 | **Suricata Alert Triage** | Alert deduplication, entity clustering, priority reranking | planned |
 | **Web Attack Detector** | Signature + statistical hybrid over access logs | planned |
 | **Hunt Query Generator** | Confirmed incident → Sigma / KQL / SPL / Zeek | planned |
+
+¹ Validated against synthetic traffic only. CTU-13 is NetFlow and carries no
+query names, and no comparable labelled DNS-tunnelling corpus was available.
+Everything else in this table is measured on real malware traffic, and the
+difference is recorded rather than blurred.
 
 ### Measured, on real malware traffic
 
@@ -172,6 +177,7 @@ voidai run ./zeek-logs/ --evidence      # print the full evidence chain per find
 voidai bench                            # seeded synthetic accuracy + energy benchmark
 voidai bench --real <capture>           # score against a labelled real capture
 voidai lexicon                          # print the complete grammar
+voidai doctor                           # pre-flight: platform, energy source, model
 voidai version                          # version and detected power profile
 ```
 
@@ -183,6 +189,8 @@ Every command prints a run receipt unless given `--no-receipt`.
   what real captures changed about the design
 - [`docs/models.md`](docs/models.md) — supported open-weight models, and what a
   1.5B model got wrong before the prompt was fixed
+- [`docs/deployment.md`](docs/deployment.md) — Pi 5, Jetson and x86, including
+  how to get *measured* rather than estimated energy
 
 ## Licence
 

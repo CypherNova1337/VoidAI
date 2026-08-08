@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from voidai.ingest.schema import CONNECTION_SCHEMA, conform
+from voidai.ingest.schema import CONNECTION_SCHEMA, DNS_SCHEMA, conform
 
 _ZEEK_CONN_FIELDS = [
     "ts",
@@ -321,3 +321,174 @@ class CorpusGenerator:
             pl.int_range(1, frame.height + 1, dtype=pl.Int64).alias("source_line")
         )
         return Corpus(connections=frame, implants=implants, benign_pairs=benign_pairs)
+
+
+# --- DNS corpora -----------------------------------------------------------
+
+_BASE32 = "abcdefghijklmnopqrstuvwxyz234567"
+_WORDS = ["www", "api", "cdn", "static", "assets", "mail", "smtp", "imap", "login", "auth", "account", "portal", "shop", "news", "blog", "media", "images", "video", "docs", "help", "support", "status", "admin", "dev", "stage", "prod", "eu", "us", "asia", "edge", "node", "cluster", "db", "cache", "queue", "search", "maps", "drive"]
+
+
+@dataclass(frozen=True)
+class DnsTunnel:
+    """A planted DNS tunnel, and the label a detector is scored against."""
+
+    src_ip: str
+    zone: str
+    label: str
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.src_ip, self.zone)
+
+
+@dataclass
+class DnsCorpus:
+    """Generated DNS telemetry plus its ground truth."""
+
+    queries: pl.DataFrame
+    tunnels: list[DnsTunnel]
+    benign_zones: set[tuple[str, str]] = field(default_factory=set)
+
+    @property
+    def tunnel_keys(self) -> set[tuple[str, str]]:
+        return {t.key for t in self.tunnels}
+
+
+class DnsCorpusGenerator:
+    """Builds labelled DNS traffic from a seed.
+
+    Adversarial by design. The benign traffic includes the two categories that
+    break naive entropy detectors:
+
+      * content delivery networks, which mint thousands of subdomains
+      * reputation and blocklist lookups, which encode hashes and reversed
+        addresses into subdomains and are tunnel-shaped by every measure
+        except entropy
+
+    A detector that clears this corpus has separated encoding from mere
+    cardinality, which is the whole difficulty.
+    """
+
+    def __init__(self, seed: int = 1337) -> None:
+        self.rng = np.random.default_rng(seed)
+
+    def _encoded(self, length: int) -> str:
+        return "".join(self.rng.choice(list(_BASE32), size=length))
+
+    def _hexed(self, length: int) -> str:
+        return "".join(self.rng.choice(list("0123456789abcdef"), size=length))
+
+    def _rows(
+        self,
+        src_ip: str,
+        names: list[str],
+        qtype: str,
+        start_epoch: float,
+        interval: float,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "ts": start_epoch + index * interval,
+                "uid": f"D{index:08x}",
+                "src_ip": src_ip,
+                "dst_ip": "10.0.0.53",
+                "query": name,
+                "qtype": qtype,
+                "rcode": "NOERROR",
+                "answers": "",
+                "source_file": "<synthetic>",
+                "source_line": index + 1,
+            }
+            for index, name in enumerate(names)
+        ]
+
+    def generate(
+        self,
+        hours: float = 6.0,
+        benign_hosts: int = 10,
+        start_epoch: float = 1_750_000_000.0,
+    ) -> DnsCorpus:
+        rows: list[dict[str, object]] = []
+        benign: set[tuple[str, str]] = set()
+
+        # --- benign: ordinary lookups, low cardinality, natural names -----
+        for host_index in range(benign_hosts):
+            src = f"10.0.1.{host_index + 10}"
+            names = [
+                f"{self.rng.choice(_WORDS)}.{self.rng.choice(['example', 'acme', 'globex'])}.com"
+                for _ in range(int(self.rng.integers(80, 200)))
+            ]
+            rows += self._rows(src, names, "A", start_epoch, 11.0)
+            benign.add((src, "example.com"))
+
+        # --- benign: a CDN — very high cardinality, structured names ------
+        for host_index in range(benign_hosts):
+            src = f"10.0.1.{host_index + 10}"
+            names = [
+                f"e{self.rng.integers(1000, 99999)}-{self.rng.integers(1, 40)}"
+                f".dscx.akamaiedge.net"
+                for _ in range(300)
+            ]
+            rows += self._rows(src, names, "A", start_epoch, 7.0)
+            benign.add((src, "akamaiedge.net"))
+
+        # --- benign: reputation lookups — encoded, but hex, not base32 ----
+        # The hardest benign case: high cardinality, long names, structured
+        # payload in the subdomain. Only entropy separates it from a tunnel.
+        for host_index in range(benign_hosts):
+            src = f"10.0.1.{host_index + 10}"
+            names = [f"{self._hexed(32)}.avqs.reputation-example.net" for _ in range(250)]
+            rows += self._rows(src, names, "A", start_epoch, 9.0)
+            benign.add((src, "reputation-example.net"))
+
+        # --- benign: DNSBL — reversed addresses, numeric, long ------------
+        for host_index in range(benign_hosts):
+            src = f"10.0.1.{host_index + 10}"
+            names = [
+                ".".join(str(self.rng.integers(1, 254)) for _ in range(4)) + ".zen.blocklist-example.org"
+                for _ in range(200)
+            ]
+            rows += self._rows(src, names, "A", start_epoch, 13.0)
+            benign.add((src, "blocklist-example.org"))
+
+        # --- malicious: tunnels -------------------------------------------
+        tunnels = [
+            DnsTunnel("10.0.1.21", "tunnel-example.com", "iodine-like-long-txt"),
+            DnsTunnel("10.0.1.22", "c2-example.net", "dnscat2-like-a-records"),
+            DnsTunnel("10.0.1.23", "exfil-example.org", "chunked-multi-label"),
+        ]
+
+        # iodine: long single label, TXT for return capacity
+        rows += self._rows(
+            tunnels[0].src_ip,
+            [f"{self._encoded(58)}.{tunnels[0].zone}" for _ in range(600)],
+            "TXT",
+            start_epoch,
+            3.0,
+        )
+        # dnscat2 in A-record mode: no qtype tell at all
+        rows += self._rows(
+            tunnels[1].src_ip,
+            [f"{self._encoded(40)}.{tunnels[1].zone}" for _ in range(450)],
+            "A",
+            start_epoch,
+            4.0,
+        )
+        # payload chunked across several labels
+        rows += self._rows(
+            tunnels[2].src_ip,
+            [
+                f"{self._encoded(20)}.{self._encoded(20)}.{self._encoded(18)}.{tunnels[2].zone}"
+                for _ in range(380)
+            ],
+            "CNAME",
+            start_epoch,
+            5.0,
+        )
+
+        frame = conform(pl.DataFrame(rows), DNS_SCHEMA).sort("ts")
+        frame = frame.with_columns(
+            pl.int_range(1, frame.height + 1, dtype=pl.Int64).alias("source_line")
+        )
+        return DnsCorpus(queries=frame, tunnels=tunnels, benign_zones=benign)
