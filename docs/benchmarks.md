@@ -356,14 +356,55 @@ positive. Both wait on real data.
 
 ---
 
-## 6. What is still open
+## 6. Alert triage
 
-**Corroboration is still coarse.** A third analyzer (DNS tunnelling) now
-exists and three-way corroboration ranks correctly on synthetic traffic, but
-CTU-13 carries no DNS query names, so on the real captures the signal remains
-two-valued. A fourth analyzer over host or alert telemetry would let ranking
-discriminate *within* the corroborated set rather than leaving that to the
-analyst.
+A mid-sized sensor emits tens of thousands of alerts a day and an analyst
+reads a few dozen, so every deployed IDS is already an alert-suppression
+problem. This analyzer does not try to decide which alerts are true. It
+reduces the flood to the few worth *correlating* and hands them on as one more
+opinion about a host — which is why `TRIGGERED_SIGNATURE` is capped at MEDIUM
+severity and never reaches HIGH on its own. A ruleset's opinion should not
+outrank VoidAI's own measurements.
+
+On a synthetic stream shaped like a real one — 60 hosts tripping policy and
+scan rules thousands of times, one host tripping two rare severe rules, and
+3,000 non-alert flow events mixed in:
+
+```
+14,534 EVE events → 11,534 alerts parsed → 2 findings
+both on the compromised host; the 60-host estate-wide noise entirely suppressed
+```
+
+A 5,767:1 reduction with the intrusion intact. Volume alone does not raise a
+score: ten thousand copies of one alert is one fact, and a test pins that.
+
+**Synthetic only.** The Stratosphere captures carry NetFlow and passivedns but
+no EVE output, so no real alert stream was reachable.
+
+Three bugs the tests caught before this shipped, all in the category table:
+
+- `"Not Suspicious Traffic"` scored **0.55**. The substring `"suspicious"`
+  matched before `"not suspicious"`, so Suricata's *noisiest* category was
+  being read as moderately suspicious — the exact inverse of intent, and
+  enough to flood the queue on its own. Negations are now matched first, in a
+  separate table, so the invariant survives someone appending to the list.
+- `"Attempted Administrator Privilege Gain"` scored **0.40**, the unmatched
+  default. The table was written with Snort classtype names
+  (`attempted-admin`) but EVE emits human-readable descriptions, so roughly
+  half the entries matched nothing. Both forms are now listed.
+- One malformed line discarded an entire file. Log rotation truncates the
+  final record mid-write routinely, so `read_eve` now falls back to a
+  line-by-line salvage when the bulk reader rejects a file.
+
+---
+
+## 7. What is still open
+
+**Corroboration is broad but shallow on real data.** Four analyzers now exist,
+and multi-way corroboration ranks correctly on synthetic traffic. But CTU-13
+carries neither DNS query names nor alerts, so on the real captures the signal
+is still only two-valued. Closing that needs a capture with network, DNS and
+alert telemetry together — which is a data problem, not a code one.
 
 **The estate has no identity.** VoidAI does not know which of its hosts is a
 mail relay, a resolver, or a domain controller. `147.32.84.229` ranks first on
@@ -376,7 +417,7 @@ section 3.
 
 ---
 
-## 7. Energy
+## 8. Energy
 
 Every figure on this page was produced on x86_64 with **estimated** energy —
 this container exposes no RAPL counters, and the fallback profile deliberately
@@ -389,7 +430,7 @@ verified.
 
 ---
 
-## 8. Reproducing
+## 9. Reproducing
 
 ```bash
 # Synthetic — no download required

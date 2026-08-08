@@ -8,6 +8,7 @@ from voidai.ingest.schema import (
     conform,
     empty,
 )
+from voidai.ingest.suricata import load_alerts, read_eve, scan_eve
 from voidai.ingest.zeek import (
     discover,
     load_connections,
@@ -23,10 +24,13 @@ __all__ = [
     "conform",
     "discover",
     "empty",
+    "load_alerts",
     "load_connections",
     "load_dns",
     "load_passivedns",
     "read_conn_log",
     "read_dns_log",
+    "read_eve",
     "read_passivedns",
+    "scan_eve",
 ]

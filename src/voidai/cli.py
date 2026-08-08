@@ -19,12 +19,15 @@ from rich.text import Text
 from voidai import __version__
 from voidai.analyzers import (
     DEFAULT_ANALYZERS,
+    AlertTriageAnalyzer,
     AnalysisContext,
     BeaconingAnalyzer,
     DnsTunnelAnalyzer,
     FanoutAnalyzer,
 )
 from voidai.correlate import IncidentQueue, build_queue
+from voidai.ingest.passivedns import load_passivedns
+from voidai.ingest.suricata import load_alerts
 from voidai.ingest.zeek import load_connections, load_dns
 from voidai.lexicon import GRAMMAR, EntityType, Finding, Severity
 from voidai.reason import Reasoner, ReasoningConfig, ReasoningResult, default_backend
@@ -246,12 +249,18 @@ def run(
 
     with EnergyMeter() as meter:
         connections = load_connections(path)
+        # Zeek dns.log if present, else passivedns from a Stratosphere-style
+        # capture. Either yields real query names; neither is required.
         dns = load_dns(path)
-        ctx = AnalysisContext(connections=connections, dns=dns)
+        if dns.is_empty():
+            dns = load_passivedns(path)
+        alerts = load_alerts(path)
+        ctx = AnalysisContext(connections=connections, dns=dns, alerts=alerts)
         findings = (
             BeaconingAnalyzer().analyze(ctx)
             + FanoutAnalyzer().analyze(ctx)
             + DnsTunnelAnalyzer().analyze(ctx)
+            + AlertTriageAnalyzer().analyze(ctx)
         )
         queue = build_queue(findings)
 
