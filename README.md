@@ -58,9 +58,13 @@ recommending an analyst's next step. Its output is constrained to a Lexicon
 schema and then passed through a **claim verifier** that strikes any sentence
 whose cited evidence IDs do not resolve.
 
-This is what lets VoidAI run at four tokens per second on a Raspberry Pi and
-still process gigabytes of telemetry. It is also why the detection quality is
-identical with the model switched off:
+Measured, on the top-ranked CTU-13 incident with Qwen2.5-1.5B at 4-bit on four
+CPU threads: a **256-token brief**, 188 tokens of response, 28.9 seconds, and
+**zero struck claims**. Detection ran at 332,759 records/second in the same
+run — the two stages are metered separately, because folding a model's writing
+time into detection throughput would understate it by two orders of magnitude.
+
+It is also why detection quality is identical with the model switched off:
 
 ```console
 $ voidai run ./capture --no-llm
@@ -78,6 +82,7 @@ the model's job.**
 | **C2 Beaconing Analyzer** | Six-signal ensemble: interval regularity, schedule-floor tightness, payload uniformity, adaptive-bin autocorrelation, coverage, estate-wide destination rarity — over burst-coalesced arrivals | **working** |
 | **Fan-out / Scan Detector** | Destination breadth against revisit rate, per port | **working** |
 | **Correlation & ranking** | Findings → per-host incidents, ordered by noisy-OR across independent behaviours | **working** |
+| **Language layer** | Token-budgeted evidence brief → grammar-constrained small model → claim verifier | **working** |
 | **DNS Tunnelling Detector** | Label entropy, subdomain cardinality, NXDOMAIN ratio, qtype skew | planned |
 | **Suricata Alert Triage** | Alert deduplication, entity clustering, priority reranking | planned |
 | **Web Attack Detector** | Signature + statistical hybrid over access logs | planned |
@@ -161,6 +166,8 @@ Core install pulls six runtime dependencies and needs no compiler.
 
 ```bash
 voidai run ./zeek-logs/                 # detection pipeline over a log directory
+voidai run ./zeek-logs/ --model m.gguf   # add the narrative layer
+voidai run ./zeek-logs/ --no-llm        # detection only; findings are unchanged
 voidai run ./zeek-logs/ --evidence      # print the full evidence chain per finding
 voidai bench                            # seeded synthetic accuracy + energy benchmark
 voidai bench --real <capture>           # score against a labelled real capture
@@ -174,6 +181,8 @@ Every command prints a run receipt unless given `--no-receipt`.
 
 - [`docs/benchmarks.md`](docs/benchmarks.md) — measured accuracy, energy, and
   what real captures changed about the design
+- [`docs/models.md`](docs/models.md) — supported open-weight models, and what a
+  1.5B model got wrong before the prompt was fixed
 
 ## Licence
 

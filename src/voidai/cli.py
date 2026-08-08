@@ -20,6 +20,7 @@ from voidai.analyzers import AnalysisContext, BeaconingAnalyzer, FanoutAnalyzer
 from voidai.correlate import IncidentQueue, build_queue
 from voidai.ingest.zeek import load_connections, load_dns
 from voidai.lexicon import GRAMMAR, EntityType, Finding, Severity
+from voidai.reason import Reasoner, ReasoningConfig, ReasoningResult, default_backend
 from voidai.telemetry import EnergyMeter, RunReceipt, detect_platform
 
 app = typer.Typer(
@@ -140,6 +141,37 @@ def _render_queue(queue: IncidentQueue, limit: int = 20) -> None:
                 )
 
 
+def _render_reasoning(results: list[ReasoningResult]) -> None:
+    """Print the language layer's output, with struck claims shown as struck.
+
+    Struck claims are displayed rather than hidden. An analyst evaluating
+    whether to trust this tool needs to see what it refused to say, and a
+    silent filter would deny them that.
+    """
+    for result in results:
+        console.print(f"\n[bold]{escape(result.incident.title)}[/bold]")
+
+        if result.report.narrative:
+            console.print(f"  {escape(result.report.narrative)}")
+        elif result.report.narrative_struck:
+            console.print(
+                "  [red]narrative struck[/red] [dim]— named an entity the evidence "
+                "does not contain[/dim]"
+            )
+
+        for claim in result.report.verified:
+            console.print(f"  [green]✓[/green] {escape(claim.text)}")
+            console.print(f"      [dim]cites {', '.join(claim.cites)}[/dim]")
+        for claim in result.report.struck:
+            console.print(f"  [red]✗[/red] [strike]{escape(claim.text)}[/strike]")
+            console.print(f"      [red dim]struck: {escape(claim.rejection_reason or '')}[/red dim]")
+
+        if result.report.actions:
+            console.print("  [dim]suggested next steps:[/dim]")
+            for action in result.report.actions:
+                console.print(f"    → {escape(action)}")
+
+
 def _render_receipt(receipt: RunReceipt) -> None:
     energy = receipt.energy
     table = Table(title="Run receipt", title_justify="left", show_header=False, expand=False)
@@ -151,16 +183,25 @@ def _render_receipt(receipt: RunReceipt) -> None:
         style = "green" if energy.is_measured else "yellow"
         table.add_row(
             "energy",
-            f"[{style}]{energy.joules:.2f} J[/{style}] "
-            f"({energy.average_watts:.1f} W avg, [{style}]{marker}[/{style}])",
+            f"[{style}]{receipt.total_joules:.2f} J[/{style}] "
+            f"total, [{style}]{marker}[/{style}]",
         )
         table.add_row("method", escape(energy.method))
-        table.add_row("time", f"{energy.wall_seconds:.2f} s wall / {energy.cpu_seconds:.2f} s cpu")
+        table.add_row(
+            "detection", f"{energy.wall_seconds:.2f} s wall / {energy.cpu_seconds:.2f} s cpu"
+        )
+        if receipt.reasoning:
+            table.add_row(
+                "reasoning",
+                f"{receipt.reasoning.wall_seconds:.2f} s wall · "
+                f"{receipt.reasoning.joules:.0f} J ({receipt.tokens.total} tokens)",
+            )
 
     table.add_row("memory", f"{receipt.peak_rss_mb:.0f} MB peak")
     table.add_row(
         "tokens",
-        f"{receipt.tokens.total} ({receipt.tokens.model or 'no model used'})",
+        f"{receipt.tokens.total} ({receipt.tokens.model or 'no model used'})"
+        + (f", {receipt.claims_struck} claim(s) struck" if receipt.claims_struck else ""),
     )
     table.add_row(
         "work",
@@ -182,6 +223,12 @@ def run(
         False, "--evidence", help="Print the full evidence chain for every finding."
     ),
     receipt: bool = typer.Option(True, "--receipt/--no-receipt", help="Print the run receipt."),
+    model: Path | None = typer.Option(
+        None, "--model", help="GGUF model for the narrative layer. Detection runs without it."
+    ),
+    explain: int = typer.Option(
+        3, "--explain", help="Incidents to narrate, highest priority first."
+    ),
 ) -> None:
     """Run the detection pipeline over a directory of telemetry."""
     if not path.exists():
@@ -209,11 +256,28 @@ def run(
     if evidence:
         _render_evidence(findings)
 
-    if not no_llm:
+    if no_llm:
         console.print(
-            "\n[dim]The language layer is not yet wired up; this run was "
-            "detection-only. Findings above are complete.[/dim]"
+            "\n[dim]--no-llm: detection only. The findings above are complete; "
+            "only the narrative is absent.[/dim]"
         )
+    else:
+        reasoner = Reasoner(
+            backend=default_backend(model),
+            config=ReasoningConfig(max_incidents=explain),
+        )
+        if not reasoner.available():
+            console.print(
+                f"\n[dim]No narrative: {reasoner.backend.reason}. "
+                "Detection is unaffected.[/dim]"
+            )
+        else:
+            with EnergyMeter() as reasoning_meter:
+                results = reasoner.explain_queue(queue.incidents, run_receipt.tokens)
+            run_receipt.claims_struck = sum(r.strike_count for r in results)
+            run_receipt.reasoning = reasoning_meter.reading
+            console.print("\n[bold]Analysis[/bold]")
+            _render_reasoning(results)
 
     if receipt:
         _render_receipt(run_receipt)

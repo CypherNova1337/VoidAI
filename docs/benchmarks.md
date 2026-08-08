@@ -257,7 +257,52 @@ output.
 
 ---
 
-## 4. What is still open
+## 4. The language layer
+
+Qwen2.5-1.5B-Instruct Q4_K_M, 4 CPU threads, x86_64, on the CTU-13 scenario 6
+top-ranked incident:
+
+| | |
+|---|---|
+| Evidence brief | 256 tokens (2 findings, 3 measurements) |
+| Prompt / completion | 605 / 188 tokens |
+| Wall time | 28.9 s (~7-11 tok/s) |
+| Claims struck | 0 |
+| Detection throughput, same run | 332,759 rec/s |
+
+Detection and reasoning are metered separately. Folding them together
+divides detection throughput by the time a model spent writing prose — the
+first version of the receipt reported 781 rec/s for a stage that actually runs
+at over 300,000.
+
+Four things the model got wrong, all fixed by changing what it is *shown*
+rather than by prompting harder — full detail in
+[`models.md`](models.md):
+
+- Called a 0.98-confidence beacon "likely a legitimate communication". It did
+  not know what the predicate meant; the Lexicon's own description now goes in
+  the brief.
+- Glossed T1071/T1573/T1008 as "reconnaissance, credential harvesting, and
+  monitoring". Those are Application Layer Protocol, Encrypted Channel and
+  Fallback Channels. Technique codes were removed from the prompt.
+- Wrote "the host is a noisy-OR beacon", having parroted the ranking
+  rationale. The brief now carries the priority number, not the arithmetic.
+- Produced a 900-character narrative, exhausted its token budget, and was cut
+  off mid-claim leaving unparseable JSON. The grammar now bounds every string
+  and list, and caps whitespace.
+
+The pattern: **show the model only what it can reason about.** Raw logs,
+technique codes and scoring notation are all things a small model repeats
+without understanding.
+
+The verifier catches uncited claims, citations that do not resolve against the
+brief, and claims naming addresses or ports absent from the cited evidence. It
+cannot catch a well-cited claim that is simply wrong — which is why all four
+fixes above are about grounding rather than filtering.
+
+---
+
+## 5. What is still open
 
 **Corroboration needs more than two opinions.** Two analyzers give a binary
 signal: corroborated or not. Scenario 3's three corroborated incidents are the
@@ -276,7 +321,7 @@ section 3.
 
 ---
 
-## 5. Energy
+## 6. Energy
 
 Every figure on this page was produced on x86_64 with **estimated** energy —
 this container exposes no RAPL counters, and the fallback profile deliberately
@@ -289,7 +334,7 @@ verified.
 
 ---
 
-## 6. Reproducing
+## 7. Reproducing
 
 ```bash
 # Synthetic — no download required

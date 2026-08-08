@@ -53,6 +53,10 @@ class RunReceipt:
 
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     energy: EnergyReading | None = None
+    #: Cost of the language layer, metered separately. Folding it into
+    #: `energy` would divide detection throughput by the time a model spent
+    #: writing prose, understating detection by two orders of magnitude.
+    reasoning: EnergyReading | None = None
     tokens: TokenUsage = field(default_factory=TokenUsage)
 
     records_ingested: int = 0
@@ -74,9 +78,22 @@ class RunReceipt:
 
     @property
     def records_per_second(self) -> float:
+        """Detection throughput. Excludes the language layer by design."""
         if not self.energy or self.energy.wall_seconds <= 0:
             return 0.0
         return self.records_ingested / self.energy.wall_seconds
+
+    @property
+    def total_joules(self) -> float:
+        return (self.energy.joules if self.energy else 0.0) + (
+            self.reasoning.joules if self.reasoning else 0.0
+        )
+
+    @property
+    def total_wall_seconds(self) -> float:
+        return (self.energy.wall_seconds if self.energy else 0.0) + (
+            self.reasoning.wall_seconds if self.reasoning else 0.0
+        )
 
     @property
     def joules_per_incident(self) -> float:
@@ -105,8 +122,12 @@ class RunReceipt:
                 else None
             ),
             "time": {
-                "wall_seconds": round(e.wall_seconds, 3) if e else None,
-                "cpu_seconds": round(e.cpu_seconds, 3) if e else None,
+                "detection_wall_seconds": round(e.wall_seconds, 3) if e else None,
+                "detection_cpu_seconds": round(e.cpu_seconds, 3) if e else None,
+                "reasoning_wall_seconds": (
+                    round(self.reasoning.wall_seconds, 3) if self.reasoning else None
+                ),
+                "total_wall_seconds": round(self.total_wall_seconds, 3),
             },
             "memory": {"peak_rss_mb": round(self.peak_rss_mb, 1)},
             "tokens": {
