@@ -135,8 +135,6 @@ class CorpusGenerator:
         self._uid += 1
         return f"C{self._uid:08x}"
 
-    # --- traffic profiles -------------------------------------------------
-
     def _browsing(self, duration: float, sessions: int) -> np.ndarray:
         """Bursty human browsing: idle gaps punctuated by clusters of requests."""
         starts = self.rng.uniform(0, duration, size=sessions)
@@ -226,8 +224,6 @@ class CorpusGenerator:
             )
         return rows
 
-    # --- corpus assembly --------------------------------------------------
-
     def generate(
         self,
         hours: float = 24.0,
@@ -238,7 +234,7 @@ class CorpusGenerator:
         rows: list[dict[str, object]] = []
         benign_pairs: set[tuple[str, str, int]] = set()
 
-        # --- benign: human browsing --------------------------------------
+        # Benign: human browsing
         for host_index in range(benign_hosts):
             src = f"10.0.1.{host_index + 10}"
             for site_index in range(int(self.rng.integers(3, 8))):
@@ -251,7 +247,7 @@ class CorpusGenerator:
                 rows += self._rows(timestamps, src, dst, 443, sizes, "ssl", start_epoch)
                 benign_pairs.add((src, dst, 443))
 
-        # --- benign: monitoring agent (periodic, variable payload) --------
+        # Benign: monitoring agent (periodic, variable payload)
         for host_index in range(benign_hosts):
             src = f"10.0.1.{host_index + 10}"
             dst = "10.0.0.50"
@@ -262,7 +258,7 @@ class CorpusGenerator:
             rows += self._rows(timestamps, src, dst, 9100, sizes, "http", start_epoch)
             benign_pairs.add((src, dst, 9100))
 
-        # --- benign: software update check (periodic, uniform, sparse) ----
+        # Benign: software update check (periodic, uniform, sparse)
         for host_index in range(benign_hosts):
             src = f"10.0.1.{host_index + 10}"
             dst = "151.101.1.55"
@@ -271,7 +267,7 @@ class CorpusGenerator:
             rows += self._rows(timestamps, src, dst, 443, sizes, "ssl", start_epoch)
             benign_pairs.add((src, dst, 443))
 
-        # --- benign: NTP (regular, uniform — suppressed by port) ----------
+        # Benign: NTP (regular, uniform — suppressed by port)
         for host_index in range(benign_hosts):
             src = f"10.0.1.{host_index + 10}"
             dst = "216.239.35.0"
@@ -280,7 +276,7 @@ class CorpusGenerator:
             rows += self._rows(timestamps, src, dst, 123, sizes, "ntp", start_epoch)
             benign_pairs.add((src, dst, 123))
 
-        # --- malicious: implants -----------------------------------------
+        # Malicious: implants
         implants = [
             Implant("10.0.1.14", "45.83.220.17", 443, 60.0, 0.00, 512, "textbook-60s"),
             Implant("10.0.1.17", "185.220.101.9", 8443, 300.0, 0.10, 1024, "jittered-5m"),
@@ -323,7 +319,6 @@ class CorpusGenerator:
         return Corpus(connections=frame, implants=implants, benign_pairs=benign_pairs)
 
 
-# --- DNS corpora -----------------------------------------------------------
 
 _BASE32 = "abcdefghijklmnopqrstuvwxyz234567"
 _WORDS = ["www", "api", "cdn", "static", "assets", "mail", "smtp", "imap", "login", "auth", "account", "portal", "shop", "news", "blog", "media", "images", "video", "docs", "help", "support", "status", "admin", "dev", "stage", "prod", "eu", "us", "asia", "edge", "node", "cluster", "db", "cache", "queue", "search", "maps", "drive"]
@@ -412,7 +407,7 @@ class DnsCorpusGenerator:
         rows: list[dict[str, object]] = []
         benign: set[tuple[str, str]] = set()
 
-        # --- benign: ordinary lookups, low cardinality, natural names -----
+        # Benign: ordinary lookups, low cardinality, natural names
         for host_index in range(benign_hosts):
             src = f"10.0.1.{host_index + 10}"
             names = [
@@ -422,7 +417,7 @@ class DnsCorpusGenerator:
             rows += self._rows(src, names, "A", start_epoch, 11.0)
             benign.add((src, "example.com"))
 
-        # --- benign: a CDN — very high cardinality, structured names ------
+        # Benign: a CDN — very high cardinality, structured names
         for host_index in range(benign_hosts):
             src = f"10.0.1.{host_index + 10}"
             names = [
@@ -433,7 +428,7 @@ class DnsCorpusGenerator:
             rows += self._rows(src, names, "A", start_epoch, 7.0)
             benign.add((src, "akamaiedge.net"))
 
-        # --- benign: reputation lookups — encoded, but hex, not base32 ----
+        # Benign: reputation lookups — encoded, but hex, not base32
         # The hardest benign case: high cardinality, long names, structured
         # payload in the subdomain. Only entropy separates it from a tunnel.
         for host_index in range(benign_hosts):
@@ -442,7 +437,7 @@ class DnsCorpusGenerator:
             rows += self._rows(src, names, "A", start_epoch, 9.0)
             benign.add((src, "reputation-example.net"))
 
-        # --- benign: DNSBL — reversed addresses, numeric, long ------------
+        # Benign: DNSBL — reversed addresses, numeric, long
         for host_index in range(benign_hosts):
             src = f"10.0.1.{host_index + 10}"
             names = [
@@ -452,7 +447,7 @@ class DnsCorpusGenerator:
             rows += self._rows(src, names, "A", start_epoch, 13.0)
             benign.add((src, "blocklist-example.org"))
 
-        # --- malicious: tunnels -------------------------------------------
+        # Malicious: tunnels
         tunnels = [
             DnsTunnel("10.0.1.21", "tunnel-example.com", "iodine-like-long-txt"),
             DnsTunnel("10.0.1.22", "c2-example.net", "dnscat2-like-a-records"),
@@ -494,7 +489,6 @@ class DnsCorpusGenerator:
         return DnsCorpus(queries=frame, tunnels=tunnels, benign_zones=benign)
 
 
-# --- a complete multi-source capture ---------------------------------------
 
 _PATIENT_ZERO = "10.0.1.14"
 
@@ -574,7 +568,7 @@ def build_demo_capture(directory: str | Path, seed: int = 1337) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
 
-    # --- connections: beaconing and fan-out ---------------------------------
+    # Connections: beaconing and fan-out
     corpus = CorpusGenerator(seed=seed).generate(hours=24.0)
     start = float(corpus.connections["ts"].min())
 
@@ -612,7 +606,7 @@ def build_demo_capture(directory: str | Path, seed: int = 1337) -> Path:
         directory / "conn.log"
     )
 
-    # --- DNS: a tunnel on the same host, among benign lookups ---------------
+    # DNS: a tunnel on the same host, among benign lookups
     dns = DnsCorpusGenerator(seed=seed).generate(hours=6.0)
     tunnel = dns.queries.with_columns(
         pl.when(pl.col("src_ip") == dns.tunnels[0].src_ip)
@@ -622,7 +616,7 @@ def build_demo_capture(directory: str | Path, seed: int = 1337) -> Path:
     )
     write_passivedns(directory / "capture.passivedns", tunnel)
 
-    # --- alerts: estate-wide noise plus two rare severe rules ---------------
+    # Alerts: estate-wide noise plus two rare severe rules
     alerts: list[dict[str, object]] = []
     noise = [
         (2013028, "ET POLICY curl User-Agent Outbound", "Not Suspicious Traffic", 3),

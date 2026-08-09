@@ -72,13 +72,13 @@ _NEGATIVE: tuple[tuple[str, float], ...] = (
 )
 
 _CATEGORY_WEIGHTS: tuple[tuple[str, float], ...] = (
-    # --- malware and control channels ---
+    # Malware and control channels
     ("network trojan", 1.00),
     ("trojan-activity", 1.00),
     ("command and control", 1.00),
     ("malware", 1.00),
     ("crypto", 0.85),
-    # --- exploitation ---
+    # Exploitation
     ("shellcode", 0.95),
     ("executable code was detected", 0.95),
     ("exploit", 0.95),
@@ -90,10 +90,10 @@ _CATEGORY_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("web application attack", 0.85),
     ("web-application-attack", 0.85),
     ("sql injection", 0.85),
-    # --- credentials and data ---
+    # Credentials and data
     ("credential", 0.90),
     ("sensitive data", 0.75),
-    # --- reconnaissance and nuisance ---
+    # Reconnaissance and nuisance
     ("denial of service", 0.60),
     ("attempted-dos", 0.60),
     ("potentially bad traffic", 0.55),
@@ -102,7 +102,7 @@ _CATEGORY_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("network scan", 0.50),
     ("network-scan", 0.50),
     ("scan", 0.50),
-    # --- policy and noise ---
+    # Policy and noise
     ("privacy violation", 0.35),
     ("policy", 0.30),
     ("misc attack", 0.50),

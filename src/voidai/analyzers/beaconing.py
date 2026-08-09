@@ -189,7 +189,6 @@ def score_pair(
     if not (config.min_period_seconds <= period <= config.max_period_seconds):
         return None
 
-    # --- the six measurements ---------------------------------------------
     interval_dispersion = coefficient_of_dispersion(intervals)
     regularity = 1.0 - min(1.0, interval_dispersion / config.max_interval_dispersion)
 
@@ -257,8 +256,6 @@ class BeaconingAnalyzer(BaseAnalyzer):
     def __init__(self, config: BeaconingConfig | None = None) -> None:
         self.config = config or BeaconingConfig()
 
-    # --- pipeline ---------------------------------------------------------
-
     def analyze(self, ctx: AnalysisContext) -> list[Finding]:
         """Two streaming passes over the capture, neither materialising it.
 
@@ -313,7 +310,7 @@ class BeaconingAnalyzer(BaseAnalyzer):
             for score, row in scored[: self.config.max_findings]
         ]
 
-    # --- pass 1: scalar summary per pair ----------------------------------
+    # Pass 1: scalar summary per pair
 
     def _pair_summary(self, scan: pl.LazyFrame) -> pl.DataFrame:
         """One row per (src, dst, port), carrying only scalars.
@@ -362,7 +359,7 @@ class BeaconingAnalyzer(BaseAnalyzer):
             )
         return candidates.select("src_ip", "dst_ip", "dst_port")
 
-    # --- pass 2: full arrays, candidates only -----------------------------
+    # Pass 2: full arrays, candidates only
 
     def _collect_series(self, scan: pl.LazyFrame, candidates: pl.DataFrame) -> pl.DataFrame:
         """Gather timestamps, byte counts and artifact locators per candidate.
@@ -408,8 +405,6 @@ class BeaconingAnalyzer(BaseAnalyzer):
             .filter(pl.col("n") >= self.config.min_connections)
             .collect(engine="streaming")
         )
-
-    # --- evidence construction -------------------------------------------
 
     def _sample_indices(self, count: int) -> list[int]:
         """Pick spread-out representatives: first, last, and evenly between.

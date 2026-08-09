@@ -65,6 +65,10 @@ class TestSubdomainOf:
     def test_query_equal_to_the_zone(self) -> None:
         assert subdomain_of("example.com", "example.com") == ""
 
+    def test_an_empty_zone_leaves_the_name_intact(self) -> None:
+        """`name[:-len("")]` is `name[:0]` — the whole string, silently gone."""
+        assert subdomain_of("evil.example.com", "") == "evilexamplecom"
+
 
 class TestScoreZone:
     def test_base32_tunnel_scores_high(self) -> None:

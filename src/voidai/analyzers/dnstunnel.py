@@ -90,10 +90,9 @@ def subdomain_of(name: str, zone: str) -> str:
     otherwise score lower than one using a single long label, which is a
     property of the encoder's framing rather than of the channel.
     """
-    lowered = name.strip(".").lower()
-    if lowered.endswith(zone):
-        lowered = lowered[: -len(zone)]
-    return lowered.replace(".", "")
+    # removesuffix rather than a slice: an empty zone makes `[:-len(zone)]`
+    # into `[:0]`, which silently returns nothing instead of the whole name.
+    return name.strip(".").lower().removesuffix(zone).replace(".", "")
 
 
 @dataclass(frozen=True)

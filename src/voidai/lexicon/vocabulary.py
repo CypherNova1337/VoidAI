@@ -65,7 +65,7 @@ _SEVERITY_RANK: dict[Severity, int] = {
 class Predicate(str, Enum):
     """The verbs. This is the complete set of assertions VoidAI can make."""
 
-    # --- Network behaviour -------------------------------------------------
+    # Network behaviour
     BEACONS_TO = "beacons_to"
     TUNNELS_DNS_OVER = "tunnels_dns_over"
     EXFILTRATES_TO = "exfiltrates_to"
@@ -75,21 +75,21 @@ class Predicate(str, Enum):
     PRESENTS_RARE_TLS_FINGERPRINT = "presents_rare_tls_fingerprint"
     RESOLVES_ALGORITHMIC_DOMAIN = "resolves_algorithmic_domain"
 
-    # --- Web ---------------------------------------------------------------
+    # Web
     ATTACKS_WEB_ENDPOINT = "attacks_web_endpoint"
     ENUMERATES_WEB_PATHS = "enumerates_web_paths"
 
-    # --- Host / identity ---------------------------------------------------
+    # Host / identity
     EXECUTES_RARE_PROCESS = "executes_rare_process"
     EXHIBITS_ANOMALOUS_LINEAGE = "exhibits_anomalous_lineage"
     AUTHENTICATION_ANOMALY = "authentication_anomaly"
     ESTABLISHES_PERSISTENCE = "establishes_persistence"
 
-    # --- Signature / intel derived -----------------------------------------
+    # Signature / intel derived
     TRIGGERED_SIGNATURE = "triggered_signature"
     MATCHES_THREAT_INTEL = "matches_threat_intel"
 
-    # --- Relational (used by the correlator, not by primary analyzers) -----
+    # Relational (used by the correlator, not by primary analyzers)
     SHARES_INFRASTRUCTURE_WITH = "shares_infrastructure_with"
     PRECEDES = "precedes"
 

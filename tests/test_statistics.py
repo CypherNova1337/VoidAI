@@ -57,8 +57,13 @@ class TestCoefficientOfDispersion:
         )
 
     def test_all_zero_values_are_not_treated_as_regular(self) -> None:
-        """Guards against an all-zero byte column manufacturing a perfect score."""
-        assert coefficient_of_dispersion(np.zeros(20)) == 0.0
+        """Guards against an all-zero byte column manufacturing a perfect score.
+
+        Zero dispersion feeds a payload-uniformity of 1.0 into the ensemble —
+        a free maximum on a fifth of the beaconing score, earned by a sensor
+        that recorded no payload at all.
+        """
+        assert coefficient_of_dispersion(np.zeros(20)) == 1.0
 
     def test_empty_is_maximally_dispersed(self) -> None:
         assert coefficient_of_dispersion(np.array([])) == 1.0
@@ -294,6 +299,26 @@ class TestCoalesceBursts:
             np.array([0.0, 0.1, 30.0]), np.array([5.0, np.nan, 7.0]), 1.0
         )
         assert totals.tolist() == [5.0, 7.0]
+
+    def test_a_burst_with_no_measurement_stays_unmeasured(self) -> None:
+        """Absent is not zero.
+
+        Coalescing runs before the caller decides whether the sensor recorded
+        byte counts. Summing NaN to 0.0 turns "no payload figure" into "an
+        empty payload", which then reads as a perfectly uniform payload and
+        scores a free maximum instead of being dropped from the ensemble.
+        """
+        _, totals = coalesce_bursts(
+            np.array([0.0, 0.1, 30.0]), np.full(3, np.nan), 1.0
+        )
+        assert np.all(np.isnan(totals))
+
+    def test_a_measured_zero_is_kept_as_zero(self) -> None:
+        """The other side of it: a real zero-byte flow is data, not absence."""
+        _, totals = coalesce_bursts(
+            np.array([0.0, 0.1, 30.0]), np.array([0.0, 0.0, 0.0]), 1.0
+        )
+        assert totals.tolist() == [0.0, 0.0]
 
     def test_empty_input(self) -> None:
         starts, totals = coalesce_bursts(np.array([]), np.array([]), 1.0)

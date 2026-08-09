@@ -74,8 +74,6 @@ class RunReceipt:
         self.peak_rss_mb = _peak_rss_mb()
         return self
 
-    # --- derived figures the demo actually shows ---------------------------
-
     @property
     def records_per_second(self) -> float:
         """Detection throughput. Excludes the language layer by design."""

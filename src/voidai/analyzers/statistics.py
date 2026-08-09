@@ -42,10 +42,11 @@ def coefficient_of_dispersion(values: np.ndarray) -> float:
         return 1.0
     median = float(np.median(values))
     if abs(median) < _EPS:
-        # All values are ~0. Uniform, but degenerate — treat as maximally
-        # dispersed rather than perfectly regular, so an all-zero byte count
-        # cannot manufacture a high score.
-        return 0.0 if float(np.max(np.abs(values))) < _EPS else 1.0
+        # Degenerate: the median carries no scale to normalise by. An all-zero
+        # byte column is *literally* uniform, but reporting that as perfect
+        # regularity hands a free maximum to a sensor that recorded nothing.
+        # Maximally dispersed is the honest answer in both directions.
+        return 1.0
     return median_absolute_deviation(values) / abs(median)
 
 
@@ -248,6 +249,11 @@ def coalesce_bursts(
     values across it. The start is the meaningful instant — it is when the
     implant decided to call home — and summing bytes keeps the payload figure
     describing one whole check-in rather than one fragment of it.
+
+    A burst holding no finite value at all sums to NaN rather than to zero.
+    The distinction matters: zero means the sensor saw an empty payload, NaN
+    means it recorded no payload figure, and only the second should cause the
+    payload measurement to be dropped and its weight redistributed.
     """
     if timestamps.size == 0:
         return timestamps, values
@@ -258,9 +264,11 @@ def coalesce_bursts(
     is_start = np.concatenate([[True], np.diff(timestamps) > threshold])
     starts = timestamps[is_start]
 
-    # Sum values within each burst via the cumulative sum at burst boundaries.
     group = np.cumsum(is_start) - 1
-    totals = np.bincount(group, weights=np.nan_to_num(values, nan=0.0))
+    finite = np.isfinite(values)
+    totals = np.bincount(group, weights=np.where(finite, values, 0.0))
+    measured = np.bincount(group, weights=finite.astype(np.float64))
+    totals[measured == 0] = np.nan
 
     return starts, totals
 

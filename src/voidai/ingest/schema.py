@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import polars as pl
 
-# --- Connection records (Zeek conn.log, Suricata flow, netflow) ------------
+# Connection records (Zeek conn.log, Suricata flow, netflow)
 
 CONNECTION_SCHEMA: dict[str, pl.DataType] = {
     "ts": pl.Float64,  # epoch seconds
@@ -37,7 +37,7 @@ CONNECTION_SCHEMA: dict[str, pl.DataType] = {
     "source_line": pl.Int64,
 }
 
-# --- DNS records (Zeek dns.log, Suricata dns events) -----------------------
+# DNS records (Zeek dns.log, Suricata dns events)
 
 DNS_SCHEMA: dict[str, pl.DataType] = {
     "ts": pl.Float64,
@@ -52,7 +52,7 @@ DNS_SCHEMA: dict[str, pl.DataType] = {
     "source_line": pl.Int64,
 }
 
-# --- Alert records (Suricata EVE, Snort) -----------------------------------
+# Alert records (Suricata EVE, Snort)
 
 ALERT_SCHEMA: dict[str, pl.DataType] = {
     "ts": pl.Float64,
