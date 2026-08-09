@@ -17,14 +17,7 @@ from rich.table import Table
 from rich.text import Text
 
 from voidai import __version__
-from voidai.analyzers import (
-    DEFAULT_ANALYZERS,
-    AlertTriageAnalyzer,
-    AnalysisContext,
-    BeaconingAnalyzer,
-    DnsTunnelAnalyzer,
-    FanoutAnalyzer,
-)
+from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext
 from voidai.correlate import IncidentQueue, build_queue
 from voidai.ingest.passivedns import load_passivedns
 from voidai.ingest.suricata import load_alerts
@@ -256,12 +249,12 @@ def run(
             dns = load_passivedns(path)
         alerts = load_alerts(path)
         ctx = AnalysisContext(connections=connections, dns=dns, alerts=alerts)
-        findings = (
-            BeaconingAnalyzer().analyze(ctx)
-            + FanoutAnalyzer().analyze(ctx)
-            + DnsTunnelAnalyzer().analyze(ctx)
-            + AlertTriageAnalyzer().analyze(ctx)
-        )
+        # Driven from DEFAULT_ANALYZERS so `voidai doctor` cannot report a
+        # set that differs from the one actually run, and so adding an
+        # analyzer is a one-line change in one place.
+        findings: list[Finding] = []
+        for analyzer in DEFAULT_ANALYZERS:
+            findings += analyzer().analyze(ctx)
         queue = build_queue(findings)
 
     run_receipt.records_ingested = ctx.record_count()
@@ -459,6 +452,43 @@ def lexicon() -> None:
         f"\n[dim]{len(GRAMMAR)} predicates. An assertion outside this set has no "
         "representation and cannot reach an analyst.[/dim]\n"
     )
+
+
+@app.command()
+def demo(
+    keep: Path | None = typer.Option(
+        None, "--keep", help="Write the generated capture here instead of a temp directory."
+    ),
+    model: Path | None = typer.Option(
+        None, "--model", help="GGUF model for the narrative layer."
+    ),
+    explain: int = typer.Option(2, "--explain", help="Incidents to narrate."),
+) -> None:
+    """Generate a complete capture and run the full pipeline over it.
+
+    Three real files in three real formats — Zeek conn.log, passivedns, and
+    Suricata EVE — so the production parsers are exercised rather than
+    bypassed. One host exhibits all four detectable behaviours, hidden in
+    benign traffic of each kind, and nothing in the data marks it out.
+    """
+    import tempfile
+
+    from voidai.eval.synth import build_demo_capture
+
+    directory = Path(keep) if keep else Path(tempfile.mkdtemp(prefix="voidai-demo-"))
+    console.print(f"[dim]Generating capture in {escape(str(directory))}…[/dim]")
+    build_demo_capture(directory)
+
+    for name in sorted(p.name for p in directory.iterdir()):
+        size = (directory / name).stat().st_size / 1024
+        console.print(f"  [dim]{escape(name):26s} {size:8.0f} KB[/dim]")
+
+    console.print(
+        "\n[dim]One host in this capture beacons, sweeps a port, tunnels DNS and "
+        "trips two rare signatures. Nothing labels it.[/dim]"
+    )
+    run(path=directory, no_llm=model is None, evidence=False, receipt=True,
+        model=model, explain=explain)
 
 
 @app.command()
