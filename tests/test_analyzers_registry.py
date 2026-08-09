@@ -42,17 +42,32 @@ def test_every_analyzer_tolerates_an_empty_context() -> None:
         assert analyzer().analyze(AnalysisContext()) == []
 
 
-def test_run_iterates_the_registry_rather_than_a_hardcoded_list() -> None:
+def test_detection_iterates_the_registry_rather_than_a_hardcoded_list() -> None:
     """Guards the drift this module exists to prevent.
 
-    `doctor` reports DEFAULT_ANALYZERS; `run` must execute the same tuple, not
-    a second list that happens to agree today.
+    `doctor` reports DEFAULT_ANALYZERS; the detection path must execute the
+    same tuple, not a second list that happens to agree today.
     """
     from voidai import cli
 
-    source = inspect.getsource(cli.run)
+    source = inspect.getsource(cli._detect)
     assert "DEFAULT_ANALYZERS" in source
     for analyzer in DEFAULT_ANALYZERS:
         assert f"{analyzer.__name__}()" not in source, (
-            f"{analyzer.__name__} is hardcoded in run(); iterate the registry instead"
+            f"{analyzer.__name__} is hardcoded in _detect(); iterate the registry instead"
         )
+
+
+def test_every_command_detects_through_the_same_path() -> None:
+    """One pipeline, not one per command.
+
+    `run` and `hunt` analyse the same directory and must reach the same
+    findings. Two copies of the ingest-and-analyse sequence would eventually
+    disagree — and the disagreement would show up as a hunt query for an
+    incident `run` never reported.
+    """
+    from voidai import cli
+
+    for command in (cli.run, cli.hunt):
+        source = inspect.getsource(command)
+        assert "_detect(" in source, f"{command.__name__} builds its own pipeline"

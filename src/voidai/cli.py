@@ -19,6 +19,7 @@ from rich.text import Text
 from voidai import __version__
 from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext
 from voidai.correlate import IncidentQueue, build_queue
+from voidai.hunt import Dialect, queries_for_incident
 from voidai.ingest.passivedns import load_passivedns
 from voidai.ingest.suricata import load_alerts
 from voidai.ingest.zeek import load_connections, load_dns
@@ -216,6 +217,31 @@ def _render_receipt(receipt: RunReceipt) -> None:
     console.print(table)
 
 
+def _detect(path: Path) -> tuple[AnalysisContext, list[Finding], IncidentQueue]:
+    """Ingest, analyse and rank. The whole model-free pipeline, in one place.
+
+    Shared by `run` and `hunt` so the two cannot drift into analysing the same
+    directory differently.
+    """
+    connections = load_connections(path)
+    # Zeek dns.log if present, else passivedns from a Stratosphere-style
+    # capture. Either yields real query names; neither is required.
+    dns = load_dns(path)
+    if dns.is_empty():
+        dns = load_passivedns(path)
+    alerts = load_alerts(path)
+    ctx = AnalysisContext(connections=connections, dns=dns, alerts=alerts)
+
+    # Driven from DEFAULT_ANALYZERS so `voidai doctor` cannot report a set
+    # that differs from the one actually run, and so adding an analyzer is a
+    # one-line change in one place.
+    findings: list[Finding] = []
+    for analyzer in DEFAULT_ANALYZERS:
+        findings += analyzer().analyze(ctx)
+
+    return ctx, findings, build_queue(findings)
+
+
 @app.command()
 def run(
     path: Path = typer.Argument(..., help="Directory of Zeek logs to analyse."),
@@ -241,21 +267,7 @@ def run(
     run_receipt = RunReceipt()
 
     with EnergyMeter() as meter:
-        connections = load_connections(path)
-        # Zeek dns.log if present, else passivedns from a Stratosphere-style
-        # capture. Either yields real query names; neither is required.
-        dns = load_dns(path)
-        if dns.is_empty():
-            dns = load_passivedns(path)
-        alerts = load_alerts(path)
-        ctx = AnalysisContext(connections=connections, dns=dns, alerts=alerts)
-        # Driven from DEFAULT_ANALYZERS so `voidai doctor` cannot report a
-        # set that differs from the one actually run, and so adding an
-        # analyzer is a one-line change in one place.
-        findings: list[Finding] = []
-        for analyzer in DEFAULT_ANALYZERS:
-            findings += analyzer().analyze(ctx)
-        queue = build_queue(findings)
+        ctx, findings, queue = _detect(path)
 
     run_receipt.records_ingested = ctx.record_count()
     run_receipt.findings_emitted = len(findings)
@@ -408,6 +420,100 @@ def bench(
     console.print(table)
     _render_findings(result.findings)
     _render_receipt(result.receipt)
+
+
+_HUNT_SUFFIX = {
+    Dialect.SIGMA: "yml",
+    Dialect.KQL: "kql",
+    Dialect.SPL: "spl",
+    Dialect.ZEEK: "sh",
+}
+
+
+@app.command()
+def hunt(
+    path: Path = typer.Argument(..., help="Directory of telemetry to analyse."),
+    dialect: Dialect = typer.Option(
+        Dialect.SIGMA, "--dialect", "-d", help="Query language to emit."
+    ),
+    top: int = typer.Option(3, "--top", help="Incidents to generate hunts for, highest first."),
+    out: Path | None = typer.Option(
+        None, "--out", help="Write each query to a file in this directory instead of stdout."
+    ),
+    receipt: bool = typer.Option(True, "--receipt/--no-receipt", help="Print the run receipt."),
+) -> None:
+    """Turn ranked incidents into queries you can run in a SIEM.
+
+    VoidAI sees one sensor's window; the SIEM holds the estate's history. So
+    the generated queries do not re-find the traffic that produced a finding —
+    you already have that. They pivot on the *indicator* and exclude the host
+    already known, which makes every row they return new information.
+
+    No model is involved. A typed proposition already carries the predicate,
+    the entity types and the measured values, so the transformation is
+    templating rather than interpretation.
+    """
+    if not path.exists():
+        console.print(f"[red]No such path:[/red] {path}")
+        raise typer.Exit(code=2)
+
+    run_receipt = RunReceipt()
+    with EnergyMeter() as meter:
+        ctx, findings, queue = _detect(path)
+    run_receipt.records_ingested = ctx.record_count()
+    run_receipt.findings_emitted = len(findings)
+    run_receipt.finalize(meter.reading)
+
+    if run_receipt.records_ingested == 0:
+        console.print(f"[yellow]No parseable telemetry found under[/yellow] {path}")
+        raise typer.Exit(code=1)
+
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+
+    written = 0
+    for ranked in queue.incidents[:top]:
+        queries = queries_for_incident(ranked.incident, dialects=(dialect,))
+        if not queries:
+            continue
+
+        console.print(
+            f"\n[bold]{escape(str(ranked.subject))}[/bold] "
+            f"[dim]priority {ranked.priority:.2f} · {len(queries)} "
+            f"{'hunt' if len(queries) == 1 else 'hunts'}[/dim]"
+        )
+        for query in queries:
+            console.print(f"\n[cyan]{escape(query.title)}[/cyan]")
+            console.print(f"[dim]{escape(query.rationale)}[/dim]")
+            if out is None:
+                # Verbatim, or not at all. markup=False because the query is
+                # built from log-derived values; soft_wrap=True because
+                # wrapping a YAML rule at terminal width breaks its
+                # indentation, and a hunt an analyst cannot paste is worse
+                # than no hunt — it looks correct and does not run.
+                console.print()
+                console.print(query.query, markup=False, highlight=False, soft_wrap=True)
+            else:
+                target = out / f"{query.finding_id}.{_HUNT_SUFFIX[dialect]}"
+                target.write_text(query.query + "\n", encoding="utf-8")
+                console.print(f"[dim]→ {escape(str(target))}[/dim]")
+                written += 1
+
+    if written:
+        console.print(f"\n[green]{written}[/green] queries written to {escape(str(out))}")
+    elif not any(queries_for_incident(r.incident) for r in queue.incidents[:top]):
+        console.print(
+            "\n[yellow]No hunts generated.[/yellow] The top-ranked incidents carry no "
+            "pivotable indicator — nothing a SIEM has a field for.\n"
+        )
+
+    console.print(
+        "\n[dim]These are hypotheses to run, not verdicts. Every query names the "
+        "finding it came from.[/dim]"
+    )
+
+    if receipt:
+        _render_receipt(run_receipt)
 
 
 @app.command()
