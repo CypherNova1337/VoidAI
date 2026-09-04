@@ -152,6 +152,29 @@ services, telemetry, certificate status lookups — the analyzer emits
 **nothing**. Only one zone even passed the volume gates, scoring 0.065 against
 a 0.62 threshold. That is the half no generator can honestly test.
 
+### Inside a Pi's resource envelope
+
+A claim that something "runs on a $80 board" is worth nothing unless the board's
+limits were actually applied. `tools/envelope.py` runs the pipeline inside a
+cgroup whose memory limit and swap are pinned to the same value — the mechanism
+a board with no swap enforces — so the answer is measured rather than believed.
+
+It corrected this project's own documentation. The 66-hour capture was recorded
+as needing more than a 4GB Pi could give. Bisected against a hard ceiling it is
+OOM-killed at 2,400 MB, *flaky* at exactly 2,500 MB, and completes reliably from
+2,600 MB, settling at a 2,545 MB peak. A 4GB board clears that with roughly
+1.1 GB spare.
+
+The load-bearing result is the combined envelope: 12.7M flows held to 3 GB and a
+**single** 2.1GHz core complete in 166 seconds and return the infected host at
+**rank 2 of 214 — identical to the unconstrained run**. Constraining the board
+changes how long the answer takes, not what the answer is. The whole pipeline
+including Qwen2.5-1.5B peaks at 2,072 MB, and `voidai demo` runs in 512 MB.
+
+This is not an ARM test, and is not presented as one. Memory ceilings and core
+counts are reproduced exactly by the kernel; the instruction set is x86-64 and
+cannot be. That distinction is the point of reporting it this way.
+
 ### The language layer
 
 Qwen2.5-1.5B at 4-bit, four CPU threads: a **256-token brief**, 188 tokens of
@@ -160,7 +183,7 @@ records/second in the same run — the two stages are metered separately.
 
 ### Test suite
 
-347 tests. Includes one that severs sockets and asserts the whole pipeline
+361 tests. Includes one that severs sockets and asserts the whole pipeline
 still completes, backing the offline claim rather than merely stating it, and
 a set that *executes* generated hunt queries against logs with known contents
 — because a query that parses but matches nothing looks exactly like a clean
@@ -206,8 +229,11 @@ Said clearly wherever those analyzers appear.
 nor alerts, so on real captures the corroboration signal is only two-valued.
 That is a data problem, not a code one.
 
-**2.6 GB peak on a 66-hour capture** fits an 8GB Pi 5, not a 4GB one.
-Windowing works around it and is what a real deployment does anyway.
+**Never run on ARM.** The instruction set is the one Pi property that cannot
+be imposed on an x86 VM, and it is the remaining risk: different wheels,
+128-bit NEON instead of 256-bit AVX2, a different allocator profile. Memory
+and core count *have* now been measured against a hard kernel-enforced ceiling
+(§4), so what is left untested is architecture alone rather than "the Pi".
 
 ## 7. What real data changed
 
@@ -248,7 +274,7 @@ voidai bench --real <capture>            # CTU-13, fetch instructions in benchma
 voidai hunt <capture> --dialect sigma    # incidents to SIEM queries
 voidai lexicon                           # the complete grammar
 voidai doctor                            # platform, energy source, model
-pytest                                   # 347 tests
+pytest                                   # 361 tests
 ```
 
 - [`benchmarks.md`](benchmarks.md) — every number above, and how it was measured

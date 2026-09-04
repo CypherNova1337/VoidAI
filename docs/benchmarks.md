@@ -241,12 +241,19 @@ count barely moves it (2,042 MB at one thread against 2,093 MB at four, for a
 4x speed difference), so it is inherent to the aggregation rather than to
 parallelism.
 
-That fits an 8GB Pi 5 but not a 4GB board. Splitting pass 1 into time windows
-and merging partial summaries would fix it — counts sum and min/max combine,
-so the merge is exact — but CSV has no random access, so windowing means
-either re-parsing per window or moving to a batched reader. A Pi deployment
-would realistically process hourly or daily windows rather than 66 hours in
-one shot, which is the same fix arriving from the operational direction.
+**Does that fit a 4GB board?** This document previously said no, reasoning
+from the peak-RSS figure. Measured against a hard cgroup ceiling with swap
+pinned to match — see `tools/envelope.py` and `deployment.md` — the answer is
+yes: OOM-killed at 2,400 MB, flaky at exactly 2,500 MB, reliable from 2,600 MB,
+and comfortable in the 3,696 MB a 4GB Pi has left after the OS. The estimate
+was pessimistic by about one board class.
+
+Splitting pass 1 into time windows and merging partial summaries would still
+lower the peak — counts sum and min/max combine, so the merge is exact — but
+CSV has no random access, so windowing means either re-parsing per window or
+moving to a batched reader. A Pi deployment would realistically process hourly
+or daily windows anyway, which is the same benefit arriving from the
+operational direction rather than as a requirement.
 
 ### Parsing was 21x slower than it needed to be
 
@@ -412,8 +419,9 @@ scenario 3 because it reaches 162,612 destinations, which is exactly what a
 gateway does. An asset inventory would demote it in one step, and the
 `AnalysisContext` already carries `ip_to_host` for exactly this.
 
-**Memory on a 4GB board.** 2,672 MB fits an 8GB Pi 5 but not a 4GB one. See
-section 3.
+**Memory headroom on the largest capture.** 2,672 MB does fit a 4GB board —
+measured, section 3 — but with roughly 1.1 GB spare rather than a wide margin.
+Windowing pass 1 would lower it further.
 
 ---
 

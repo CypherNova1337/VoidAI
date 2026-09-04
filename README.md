@@ -198,6 +198,16 @@ interface down, and the test suite asserts it.
 wheel that lacks an `aarch64` build. The language layer is an *optional extra*;
 the core is six libraries.
 
+**"Fits on a Pi" is measured, not asserted.** `tools/envelope.py` runs the
+pipeline inside a cgroup whose memory limit and swap are pinned together — the
+mechanism a board with no swap enforces. It corrected this README: the 66-hour,
+12.7M-flow capture was documented as needing more than a 4GB board, and in fact
+is OOM-killed at 2,400 MB, flaky at exactly 2,500 MB, and completes reliably
+from 2,600 MB. Held to 3 GB and a **single** core it still finishes in 166 s
+and still returns the infected host at **rank 2 of 214 — the unconstrained
+result**. `voidai demo` runs in 512 MB. This is not an ARM test and is not
+offered as one; see [`docs/deployment.md`](docs/deployment.md).
+
 **Small by construction.** The target model tier is 1.7B–4B parameters at
 4-bit quantisation. If a finding requires a larger model, the correct fix is a
 better analyzer, not a bigger model.
