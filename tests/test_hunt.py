@@ -125,13 +125,56 @@ class TestPivotSelection:
         )
         assert queries_for(pair) == []
 
-    def test_objectless_findings_yield_nothing(self) -> None:
+    def test_an_intel_match_pivots_on_its_subject(self) -> None:
+        """The one unary predicate that carries a real indicator.
+
+        `matches_threat_intel` has no object — the address *is* the claim — so
+        the pivot has to come from the subject. This test previously asserted
+        that objectless findings yield nothing, which was true only while no
+        analyzer emitted the predicate; the invariant it was actually guarding
+        is the one below it, that a finding carrying no SIEM-queryable
+        indicator stays silent.
+        """
         intel = finding(
             Predicate.MATCHES_THREAT_INTEL,
             Entity(type=EntityType.IP, value="45.83.220.17"),
             None,
         )
-        assert queries_for(intel) == []
+        queries = queries_for(intel)
+        assert queries, "an intel match on an address is the most pivotable finding there is"
+        for query in queries:
+            assert "45.83.220.17" in query.query
+            assert query.pivot == "dst=45.83.220.17"
+
+    def test_an_intel_match_hunts_every_host_including_the_known_one(self) -> None:
+        """No exclusion, unlike every other pivot.
+
+        Elsewhere the known subject is excluded because re-finding the traffic
+        that produced the finding tells an analyst nothing. Here the subject
+        *is* the indicator, and every host that touched it — the one already
+        seen included — is what the query is for.
+        """
+        intel = finding(
+            Predicate.MATCHES_THREAT_INTEL,
+            Entity(type=EntityType.DOMAIN, value="c2.evil.example"),
+            None,
+        )
+        sigma = queries_for(intel, dialects=(Dialect.SIGMA,))[0]
+        assert "c2.evil.example" in sigma.query
+        assert "filter" not in sigma.query.lower(), "an intel hunt excludes nothing"
+
+    def test_unqueryable_intel_subjects_yield_nothing(self) -> None:
+        """A hash is not a field in any log source this generator templates.
+
+        A query for one would return nothing forever while looking like a
+        clean estate, which is worse than no query at all.
+        """
+        digest = finding(
+            Predicate.MATCHES_THREAT_INTEL,
+            Entity(type=EntityType.FILE_HASH, value="d41d8cd98f00b204e9800998ecf8427e"),
+            None,
+        )
+        assert queries_for(digest) == []
 
     def test_the_pivot_is_the_object_not_the_subject(self) -> None:
         """The point of a hunt is to find hosts you do not already know about."""

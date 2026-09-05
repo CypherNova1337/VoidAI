@@ -1,15 +1,15 @@
 # Roadmap — filling in the Lexicon
 
-Eighteen predicates are declared. Seven have an analyzer that emits them. The
+Eighteen predicates are declared. Nine have an analyzer that emits them. The
 vocabulary is ahead of the code on purpose: the grammar was written for the
-system VoidAI is meant to become, and the remaining eleven predicates are the
+system VoidAI is meant to become, and the remaining nine predicates are the
 work list.
 
 ```
-18 predicates declared · 5 analyzers built · 11 predicates unclaimed
+18 predicates declared · 6 analyzers built · 9 predicates unclaimed
 ```
 
-This document is the plan for the other eleven. Each section is a self-contained
+This document is the plan for the other nine. Each section is a self-contained
 unit of work sized to one branch, and they are ordered by ratio of value
 to lift. **Take one. Do not take two.**
 
@@ -161,6 +161,25 @@ component is omitted rather than defaulted, one line in `DEFAULT_ANALYZERS`, a
 
 ## 2 · Threat intel — `analyzer-intel`
 
+> **Done.** `src/voidai/analyzers/intel.py` and `src/voidai/ingest/ioc.py`,
+> registered, documented in `docs/ioc.md`, and covered by 63 tests. Validation
+> is **synthetic and there is no detection rate to measure** — by
+> construction, not for want of a corpus: the detection was performed by
+> whoever wrote the feed, and what is scorable is whether the join is correct
+> and whether the claim is bounded by what the file said.
+>
+> It was the cheapest cluster as predicted, and the two things that took the
+> time were not the join. The first was rule 6 with no weights to
+> renormalise — see below. The second was that both flood mechanisms only
+> became visible by printing the findings and reading them, which is worth
+> doing before writing the tests rather than after.
+>
+> One cross-cutting question came out of it and is deliberately **not**
+> settled here: `matches_threat_intel` is unary and its subject is the
+> indicator, so an intel hit forms its own incident instead of corroborating
+> the host that contacted it. That is correlator-side and belongs with
+> cluster 4. `docs/benchmarks.md` §8 has the account.
+
 Cheapest cluster in the list. A short piece of work.
 
 **Claims** `matches_threat_intel` (medium, unary) · `shares_infrastructure_with` (info)
@@ -200,6 +219,43 @@ integration, not detection. A fixture with a handful of indicators is sufficient
 
 `intel.py`, a documented IOC file format, an offline test asserting no fetch is
 attempted, registry line, docs.
+
+### What it cost, for whoever takes the next one
+
+**Rule 6 had to be re-derived, because there are no weights here.** The rule
+is written for a geometric mean: drop the component, renormalise. This
+analyzer's confidence is a product of a declared value and a decay, and the
+same principle lands in two different places. A feed declaring no confidence
+scores at an explicit unprovenanced floor. An indicator with no *date* is the
+one that bites: the obvious handling is a decay of 1.0, and it fails in the
+flattering direction — an undated indicator would outscore a dated one a month
+old, rewarding the feed that recorded less. The confidence is **capped**
+instead. A cap says the claim cannot be made strongly; a substituted age says
+the indicator is fresh, which nobody measured.
+
+**Age must be measured against the capture, not the clock.** Not only because
+it is the right question — how stale was the intelligence when the traffic
+happened — but because every ID in the Lexicon is content-addressed. A
+wall-clock `age_days` in an evidence payload gives the same run a different
+evidence ID every day, and last week's citations resolve to nothing. Note that
+a test asserting "two runs produce the same IDs" does **not** catch this: the
+two runs are seconds apart and agree about today. The assertion that catches
+it needs two captures ninety days apart to disagree by ninety days.
+
+**Both flood mechanisms were found by reading the output, not by reasoning.**
+A parent-domain indicator emitted one finding per subdomain, so one wildcarded
+feed entry became forty findings about one fact. And
+`shares_infrastructure_with` linked five addresses inside one `/24` entry to
+each other — reporting the operator's own file back to them as a discovery.
+Both are obvious once printed and neither was predicted. Print the findings
+before writing the tests.
+
+**`max_age_days` and `min_confidence` overlap, and a test can name the wrong
+one.** At default settings the decay pushes anything past two years under the
+floor before the hard cut is reached, so a test asserting "an ancient
+indicator produces nothing" passes with `max_age_days` deleted. It names one
+mechanism and guards another — rule 8 exactly. Disable the floor in that test
+to isolate the cut, and assert the floor separately.
 
 ---
 
@@ -275,6 +331,23 @@ took the CTU-13 true positive from rank 358 to rank 1.
 **Timestamps come from sensors that disagree.** Two log sources on one host can be
 seconds or hours apart. Require a minimum separation before asserting order, and
 record the separation in the evidence payload so a reader can judge it.
+
+### One more correlator question, left over from cluster 2
+
+Since this cluster is already opening `correlate/incidents.py`, settle this
+while it is open. `matches_threat_intel` is unary and its subject is the
+*indicator*, so incidents formed by subject put an intel hit in its own
+incident rather than in the one for the host that contacted it. A host that
+beacons **and** reaches a known-bad address currently reads as two incidents,
+which is exactly the conjunction the corroboration multiplier exists to
+surface.
+
+Do not fix it by making the host the subject — the predicate says the subject
+appears in a feed, and a host does not. The question is whether incident
+formation should follow an edge from a finding's *object* to a matching
+finding's *subject*, and rule 6's third level applies to the answer: an
+assertion that came from a file is not the same kind of evidence as a
+measurement, and may not corroborate as though it were.
 
 ---
 
@@ -367,7 +440,7 @@ vendoring.
 | | Cluster | Lift | Why this position |
 |---|---|---|---|
 | 1 | Volume and egress | Low | **Done** — and it rewrote rule 6; see the section |
-| 2 | Threat intel | Low | Cheapest; mostly integration |
+| 2 | Threat intel | Low | **Done** — and rule 6 had to be re-derived without weights; see the section |
 | 3 | TLS and DGA | Medium | Small parser; reuses existing entropy work |
 | 4 | Temporal ordering | Low | No parser at all; markedly improves the narrative |
 | 5 | Host and endpoint | High | Biggest corroboration payoff, biggest lift — split it up |

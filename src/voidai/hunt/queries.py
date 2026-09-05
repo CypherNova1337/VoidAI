@@ -235,6 +235,35 @@ def _pivot_for(finding: Finding) -> _Pivot | None:
     query for it would be inventing an indicator.
     """
     subject, target = finding.subject, finding.object
+
+    if finding.predicate is Predicate.MATCHES_THREAT_INTEL:
+        # The one unary predicate that carries an indicator. Its *subject* is
+        # the indicator — the address or name that appeared in the operator's
+        # feed — so the pivot comes from the subject rather than the object,
+        # and nothing is excluded: the question is which hosts touched it, and
+        # every one of them is the answer.
+        if subject.type is EntityType.IP:
+            field_name = "dst"
+        elif subject.type is EntityType.DOMAIN:
+            field_name = "domain"
+        else:
+            # A hash or a URL. Neither is a field in the log sources this
+            # generator templates against, and a query for one would return
+            # nothing forever while looking like a clean estate.
+            return None
+        return _Pivot(
+            field=field_name,
+            value=subject.value,
+            exclude_src=None,
+            title=f"Every host touching {subject.value}",
+            rationale=(
+                "The indicator came from a feed, not from this capture, so "
+                "the estate's history is the measurement that matters. Any "
+                "host that reached it is in the same position as the one "
+                "already found."
+            ),
+        )
+
     if target is None:
         return None
 
@@ -505,10 +534,13 @@ def pivot_entities(incident: Incident) -> list[Entity]:
     entities: list[Entity] = []
     seen: set[str] = set()
     for finding in sorted(incident.findings, key=lambda f: -f.confidence):
-        if finding.object is None or _pivot_for(finding) is None:
+        if _pivot_for(finding) is None:
             continue
-        if finding.object.id in seen:
+        # Unary predicates carry their indicator on the subject; everything
+        # else carries it on the object.
+        entity = finding.object if finding.object is not None else finding.subject
+        if entity.id in seen:
             continue
-        seen.add(finding.object.id)
-        entities.append(finding.object)
+        seen.add(entity.id)
+        entities.append(entity)
     return entities

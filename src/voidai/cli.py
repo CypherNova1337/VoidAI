@@ -21,6 +21,7 @@ from voidai import __version__
 from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext
 from voidai.correlate import IncidentQueue, build_queue
 from voidai.hunt import Dialect, queries_for_incident
+from voidai.ingest.ioc import IOC_SUFFIX, load_indicators
 from voidai.ingest.passivedns import load_passivedns
 from voidai.ingest.suricata import load_alerts
 from voidai.ingest.zeek import load_connections, load_dns
@@ -221,7 +222,10 @@ def _render_receipt(receipt: RunReceipt) -> None:
     console.print(table)
 
 
-def _detect(path: Path) -> tuple[AnalysisContext, list[Finding], IncidentQueue]:
+def _detect(
+    path: Path,
+    intel: Path | None = None,
+) -> tuple[AnalysisContext, list[Finding], IncidentQueue]:
     """Ingest, analyse and rank. The whole model-free pipeline, in one place.
 
     Shared by `run` and `hunt` so the two cannot drift into analysing the same
@@ -234,7 +238,12 @@ def _detect(path: Path) -> tuple[AnalysisContext, list[Finding], IncidentQueue]:
     if dns.is_empty():
         dns = load_passivedns(path)
     alerts = load_alerts(path)
-    ctx = AnalysisContext(connections=connections, dns=dns, alerts=alerts)
+    # Indicators are read from files and never retrieved. Absent by default:
+    # `*.ioc` alongside the telemetry, or wherever `--intel` points.
+    indicators = load_indicators(intel or path)
+    ctx = AnalysisContext(
+        connections=connections, dns=dns, alerts=alerts, indicators=indicators
+    )
 
     # Driven from DEFAULT_ANALYZERS so `voidai doctor` cannot report a set
     # that differs from the one actually run, and so adding an analyzer is a
@@ -262,6 +271,11 @@ def run(
     explain: int = typer.Option(
         3, "--explain", help="Incidents to narrate, highest priority first."
     ),
+    intel: Path | None = typer.Option(
+        None,
+        "--intel",
+        help=f"Directory or file of local {IOC_SUFFIX} indicators. Read, never fetched.",
+    ),
 ) -> None:
     """Run the detection pipeline over a directory of telemetry."""
     if not path.exists():
@@ -271,7 +285,7 @@ def run(
     run_receipt = RunReceipt()
 
     with EnergyMeter() as meter:
-        ctx, findings, queue = _detect(path)
+        ctx, findings, queue = _detect(path, intel)
 
     run_receipt.records_ingested = ctx.record_count()
     run_receipt.findings_emitted = len(findings)
@@ -477,6 +491,11 @@ def hunt(
         None, "--out", help="Write each query to a file in this directory instead of stdout."
     ),
     receipt: bool = typer.Option(True, "--receipt/--no-receipt", help="Print the run receipt."),
+    intel: Path | None = typer.Option(
+        None,
+        "--intel",
+        help=f"Directory or file of local {IOC_SUFFIX} indicators. Read, never fetched.",
+    ),
 ) -> None:
     """Turn ranked incidents into queries you can run in a SIEM.
 
@@ -495,7 +514,7 @@ def hunt(
 
     run_receipt = RunReceipt()
     with EnergyMeter() as meter:
-        ctx, findings, queue = _detect(path)
+        ctx, findings, queue = _detect(path, intel)
     run_receipt.records_ingested = ctx.record_count()
     run_receipt.findings_emitted = len(findings)
     run_receipt.finalize(meter.reading)
@@ -629,13 +648,86 @@ def demo(
         "\n[dim]One host in this capture beacons, sweeps a port, tunnels DNS and "
         "trips two rare signatures. Nothing labels it.[/dim]"
     )
-    run(path=directory, no_llm=model is None, evidence=False, receipt=True,
-        model=model, explain=explain)
+    # Every parameter of `run` is passed explicitly, including the ones this
+    # command has no opinion about. `run` is a typer command, so an argument
+    # left out here arrives as an `OptionInfo` rather than as its default, and
+    # fails somewhere further down with a type error that names neither
+    # command. `tests/test_demo.py` invokes this through the CLI so the next
+    # option added to `run` is caught here rather than by a user.
+    run(
+        path=directory,
+        no_llm=model is None,
+        evidence=False,
+        receipt=True,
+        model=model,
+        explain=explain,
+        intel=None,
+    )
+
+
+def _intel_row(table: Table, intel: Path | None) -> None:
+    """Report what an IOC path actually loaded.
+
+    Written for the failure an operator cannot see: a file in the wrong place,
+    a file whose lines were all rejected, or a file full of hashes and URLs
+    that nothing in this repository can match yet. Each of those looks
+    identical to "no intel configured" from the outside, and each has a
+    different fix.
+    """
+    if intel is None:
+        table.add_row("intel", f"[dim]none given — pass --intel to check {IOC_SUFFIX} files[/dim]")
+        return
+
+    if not intel.exists():
+        table.add_row("intel", f"[red]not found:[/red] {escape(str(intel))}")
+        return
+
+    indicators = load_indicators(intel)
+    if indicators.is_empty():
+        table.add_row(
+            "intel",
+            f"[yellow]no indicators[/yellow] — {len(indicators.feeds)} {IOC_SUFFIX} file(s) read",
+        )
+    else:
+        counts = ", ".join(f"{count} {kind}" for kind, count in indicators.counts().items() if count)
+        table.add_row(
+            "intel",
+            f"[green]{len(indicators)} indicator(s)[/green] from "
+            f"{len(indicators.feeds)} feed(s) — {escape(counts)}",
+        )
+
+    unprovenanced = [feed.name for feed in indicators.feeds if not feed.provenanced]
+    if unprovenanced:
+        table.add_row(
+            "",
+            "[dim]no declared confidence: "
+            + escape(", ".join(sorted(unprovenanced)[:4]))
+            + " — matches score low by design[/dim]",
+        )
+
+    inert = indicators.counts()["url"] + indicators.counts()["file_hash"]
+    if inert:
+        table.add_row(
+            "",
+            f"[dim]{inert} url/hash indicator(s) loaded but inert: no HTTP or process "
+            "telemetry parser exists yet[/dim]",
+        )
+
+    if indicators.rejected:
+        first = indicators.rejected[0]
+        table.add_row(
+            "",
+            f"[yellow]{len(indicators.rejected)} line(s) rejected[/yellow] — "
+            f"e.g. {escape(Path(first[0]).name)}:{first[1]} {escape(first[2][:40])}",
+        )
 
 
 @app.command()
 def doctor(
     model: Path | None = typer.Option(None, "--model", help="GGUF model to check for."),
+    intel: Path | None = typer.Option(
+        None, "--intel", help=f"Directory or file of local {IOC_SUFFIX} indicators to check."
+    ),
 ) -> None:
     """Pre-flight check: platform, energy source, optional components.
 
@@ -694,6 +786,8 @@ def doctor(
         )
     else:
         table.add_row("model", "[dim]none given — pass --model to check one[/dim]")
+
+    _intel_row(table, intel)
 
     table.add_row("analyzers", ", ".join(a.name for a in DEFAULT_ANALYZERS))
     table.add_row("predicates", f"{len(GRAMMAR)} in the Lexicon")

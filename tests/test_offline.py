@@ -16,9 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from voidai.analyzers import AnalysisContext, BeaconingAnalyzer
+from voidai.analyzers import AnalysisContext, BeaconingAnalyzer, ThreatIntelAnalyzer
 from voidai.eval.benchmark import run_benchmark
 from voidai.eval.synth import CorpusGenerator
+from voidai.ingest.ioc import load_indicators
 from voidai.ingest.zeek import read_conn_log
 
 
@@ -54,6 +55,33 @@ class TestPipelineRunsOffline:
     def test_detection_is_offline(self) -> None:
         corpus = CorpusGenerator(seed=1337).generate(hours=24.0)
         findings = BeaconingAnalyzer().analyze(AnalysisContext(connections=corpus.connections))
+        assert findings, "detection produced nothing — the test would be vacuous"
+
+    def test_threat_intel_is_offline(self, tmp_path: Path) -> None:
+        """The cluster most likely to tempt someone into fetching a feed.
+
+        Threat intel is one HTTP call away from being much easier to build,
+        and the whole architecture rests on it not being built that way. IOC
+        sets are files the operator places on disk; VoidAI reads them and
+        never retrieves them.
+        """
+        corpus = CorpusGenerator(seed=1337).generate(hours=6.0)
+        destination = corpus.connections["dst_ip"][0]
+        # Dated just before the generated corpus, which starts 2025-06-15, so
+        # the age path is exercised rather than sidestepped by an undated feed.
+        (tmp_path / "operator.ioc").write_text(
+            "# name: offline-fixture\n"
+            "# confidence: 0.9\n"
+            "# updated: 2025-06-01\n"
+            f"{destination}\n"
+        )
+
+        indicators = load_indicators(tmp_path)
+        assert len(indicators) == 1, "the fixture must actually load, or the test is vacuous"
+
+        findings = ThreatIntelAnalyzer().analyze(
+            AnalysisContext(connections=corpus.connections, indicators=indicators)
+        )
         assert findings, "detection produced nothing — the test would be vacuous"
 
     def test_full_benchmark_is_offline(self) -> None:

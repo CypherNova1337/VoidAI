@@ -1,0 +1,15 @@
+# name: example-tracking
+# confidence: 0.80
+# updated: 2018-04-01
+# reference: https://intel.example/report/0001
+# tlp: clear
+
+# The fixture behind tests/test_intel.py. Dates sit just before the
+# timestamps the tests generate, so the age decay is exercised with real
+# arithmetic rather than with zero.
+
+45.83.220.17       added=2018-03-25  note=observed c2
+185.220.101.0/24   added=2018-03-20  note=rented range
+c2.evil.example    added=2018-03-25
+d41d8cd98f00b204e9800998ecf8427e   added=2018-03-25
+http://drop.evil.example/gate.php  added=2018-03-25

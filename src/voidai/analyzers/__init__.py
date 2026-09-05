@@ -21,6 +21,12 @@ from voidai.analyzers.egress import (
     score_transfer,
 )
 from voidai.analyzers.fanout import FanoutAnalyzer, FanoutConfig, FanoutScore, score_fanout
+from voidai.analyzers.intel import (
+    IntelConfig,
+    IntelScore,
+    ThreatIntelAnalyzer,
+    score_match,
+)
 
 #: Analyzers run by `voidai run` unless a subset is requested.
 DEFAULT_ANALYZERS: tuple[type[BaseAnalyzer], ...] = (
@@ -29,6 +35,7 @@ DEFAULT_ANALYZERS: tuple[type[BaseAnalyzer], ...] = (
     EgressAnalyzer,
     DnsTunnelAnalyzer,
     AlertTriageAnalyzer,
+    ThreatIntelAnalyzer,
 )
 
 __all__ = [
@@ -51,8 +58,12 @@ __all__ = [
     "FanoutAnalyzer",
     "FanoutConfig",
     "FanoutScore",
+    "IntelConfig",
+    "IntelScore",
+    "ThreatIntelAnalyzer",
     "score_alert_cluster",
     "score_fanout",
+    "score_match",
     "score_pair",
     "score_transfer",
     "score_zone",

@@ -1,0 +1,4 @@
+# A feed that declares nothing about itself. Deliberately: an indicator with
+# no provenance must score low rather than score by default.
+198.51.100.7
+noprovenance.example

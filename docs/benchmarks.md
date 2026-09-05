@@ -545,7 +545,7 @@ Estate-wide rarity scores it 1.0 because the score is right: one host, one
 destination, nobody else. Novelty is what holds it to MEDIUM rather than
 CRITICAL — the destination has been in use since the capture opened — but
 nothing available to this analyzer can take it to zero, because nothing in the
-telemetry says "backup server". This is the gap section 8 already records as
+telemetry says "backup server". This is the gap section 9 already records as
 open: **the estate has no identity.** An asset inventory demotes it in one
 step, and `AnalysisContext.ip_to_host` exists for exactly that.
 
@@ -758,13 +758,171 @@ picking a number that suits one capture.
 
 ---
 
-## 8. What is still open
+## 8. Threat intel — integration, not detection
 
-**Corroboration is broad but shallow on real data.** Five analyzers now
-exist, and multi-way corroboration ranks correctly on synthetic traffic. But
-CTU-13 carries neither DNS query names nor alerts, so on the real captures the
-signal is still only two-valued. Closing that needs a capture with network,
-DNS and alert telemetry together — which is a data problem, not a code one.
+**Synthetic, and there is no detection rate to measure.** That is not a gap
+waiting to be filled by a better corpus. The detection was performed by
+whoever wrote the feed; what this analyzer does is join a file to a capture,
+and the only question worth scoring is whether the join is correct and whether
+what it claims is bounded by what the file actually said. A fixture with a
+handful of indicators answers that, and a labelled corpus would not answer it
+better.
+
+So the numbers below are counts and behaviours, not precision and recall, and
+nothing in this section should be read as a measured detection rate.
+
+```
+5 indicators (1 ip, 1 cidr, 1 domain, 1 url, 1 hash) → 63 tests
+3,000,000 flows over 200,000 destinations → 838k rec/s
+```
+
+### What the join is not
+
+Every other analyzer here measures something and combines the measurements
+with a weighted geometric mean. The obvious move is to do the same, so this
+one looks like its neighbours: score the match on flow count, on destination
+rarity, on how long the conversation ran.
+
+All three numbers are real and none of them is evidence about whether the
+indicator is *true*. A host that contacted a known C2 once and a host that
+contacted it four thousand times have exactly the same intelligence behind
+them. Folding volume into the score would report VoidAI's own observation as
+though it corroborated the feed — the same circularity that keeps `precedes`
+out of the corroboration count.
+
+Confidence therefore comes from the feed alone: its declared confidence,
+decayed by how stale the indicator was when the traffic was seen.
+`test_volume_does_not_move_the_score` fails if that stops being true.
+
+### Missing provenance, and the version of rule 6 that has no weights
+
+Rule 6 says a component that is unavailable is omitted and the remaining
+weights renormalise. There are no weights here, so the rule had to be
+re-derived for a product of two factors, and it lands in two different places:
+
+**A feed that declares no confidence** has not declared low confidence. It has
+declared nothing, and the honest reading is that the claim cannot be strong —
+so it scores at `0.25`, below the MEDIUM threshold, and can enrich an incident
+without raising one on its own.
+
+**An indicator with no date** has an *unknown* age, not a fresh one. This is
+the one that bites, because the obvious handling is a decay of 1.0, and it
+fails in the flattering direction: an undated indicator would score **higher
+than a dated one a month old**, rewarding the feed that recorded less. The
+confidence is therefore **capped** at `0.35` rather than multiplied by an
+invented decay. A cap states that the claim cannot be made strongly; a
+substituted age would state that the indicator is fresh, which nobody
+measured.
+
+### Age is measured against the capture, and that is not a detail
+
+An indicator from 2019 firing on a residential address reassigned three years
+ago is a false positive with a citation attached, and a citation is the thing
+an analyst is least likely to re-check. Two mechanisms drop those: a hard cut
+at 730 days, and a confidence floor at 0.10 that a 180-day half-life reaches
+well before it.
+
+The age is measured from the indicator's date to **the capture's own
+timestamps**, never from the clock. Both reasons matter and the second is
+load-bearing:
+
+- It is the right question. What matters is how stale the intelligence was
+  when the traffic happened.
+- Every ID in the Lexicon is content-addressed. An `age_days` derived from
+  `datetime.now()` would give the same input a different evidence ID every
+  day, and every citation in an archived report would stop resolving.
+
+The wall-clock version of this analyzer passes a test asserting that two runs
+produce identical IDs — they are seconds apart and agree about today. The
+assertion that catches it requires two captures ninety days apart to disagree
+by ninety days.
+
+### Two flood mechanisms, both found by reading the output
+
+Neither was predicted; both were obvious once the findings were printed.
+
+**A parent-domain indicator emitted one finding per subdomain.** One
+wildcarded entry in a feed against forty observed names is forty findings
+about one fact. They now collapse to a single finding naming the zone, with
+the observed names and their true count in the payload.
+
+**`shares_infrastructure_with` reported the operator's own file back to them.**
+Five addresses inside one `/24` entry were linked to each other pairwise as
+shared infrastructure. They do share infrastructure — that is what the
+operator wrote down — and restating it is noise with a citation attached. The
+predicate now requires the two ends to have been caught by *different*
+indicators, and requires one end to be an intel match at all. Ungated it is an
+O(n²) description of shared hosting, and the analyst learns that CDNs exist.
+
+### Cost
+
+The pass is two streaming aggregations and a dictionary lookup per distinct
+value, with locators gathered by semi-join for the handful of values actually
+reported. On three million flows across 200,000 distinct destinations against
+a 700-indicator feed it runs at 838k rec/s.
+
+Peak memory is dominated by the streaming `group_by` — 254 MB at that
+cardinality, the same figure `egress.py` pays for the same operation. The part
+this analyzer controls is the Python side, and it is kept bounded by the match
+count rather than by the capture: filtering during the fold rather than after
+it is 0.1 MB of Python allocation against 48.5 MB for the same work.
+
+### What is not measured
+
+- **Any real detection rate.** By construction, as above.
+- **The half-life.** 180 days is set from the shape of the problem, not from
+  data. The observed lifetime of a rented C2 address is far shorter and of a
+  malware hash far longer, and a single half-life for both is a compromise
+  nothing here has calibrated.
+- **The unprovenanced floor and the undated cap.** `0.25` and `0.35` are
+  ordered correctly with respect to the MEDIUM threshold and to each other,
+  which is the property that matters; the values themselves are judgement.
+- **URL and file-hash indicators**, which load and match nothing. No HTTP log
+  parser and no process telemetry exist until clusters 5 and 6.
+
+### One thing this cluster surfaced that belongs to the correlator
+
+`matches_threat_intel` is unary and its subject is the **indicator** — the
+address or name that appeared in the feed. Correlation groups findings by
+subject, so an intel hit on a destination forms its own incident rather than
+joining the incident for the host that contacted it:
+
+```
+ 1  CRITICAL  0.98  ip:10.0.1.14      beacons_to             1
+ 2  MEDIUM    0.89  ip:10.0.0.50      matches_threat_intel   1
+```
+
+That is honest and it is useful — a fresh, well-provenanced hit lands near the
+top of the queue on its own merits, and the payload names the hosts that
+touched it. But the host does not get the corroboration bump that the whole
+ranking mechanism exists to produce, and a host that beacons *and* contacts a
+known-bad address is exactly the conjunction the noisy-OR was built to
+surface.
+
+Fixing it means changing how incidents are formed, which is cross-cutting:
+correlation behaviour affects every cluster in the roadmap, and rule 6's third
+level says a finding resting on external assertion must not corroborate in the
+way a measurement does. Cluster 4 is also correlator-side work. It is recorded
+here, and left for that discussion, rather than settled unilaterally inside
+this branch.
+
+---
+
+## 9. What is still open
+
+**Corroboration is broad but shallow on real data.** Six analyzers now exist,
+and multi-way corroboration ranks correctly on synthetic traffic. But CTU-13
+carries neither DNS query names nor alerts, so on the real captures the signal
+is still only two-valued. Closing that needs a capture with network, DNS and
+alert telemetry together — which is a data problem, not a code one.
+
+**Threat intel does not corroborate the host that contacted it.** The
+predicate is unary and its subject is the indicator, so an intel hit forms its
+own incident rather than joining the incident for the host — section 8 has the
+account. A host that beacons *and* reaches a known-bad address is exactly the
+conjunction the ranking exists to surface, and it currently reads as two
+incidents. This is correlator-side work, cross-cutting, and belongs with
+cluster 4 rather than inside the intel branch.
 
 **Volume and egress has no real accuracy figure, and may not get one here.**
 CTU-13 gives it queue ranks and corroboration counts — section 7 — but not a
@@ -791,7 +949,7 @@ it further.
 
 ---
 
-## 9. Energy
+## 10. Energy
 
 Every figure on this page was produced on x86_64 with **estimated** energy —
 this container exposes no RAPL counters, and the fallback profile deliberately
@@ -804,12 +962,15 @@ verified.
 
 ---
 
-## 10. Reproducing
+## 11. Reproducing
 
 ```bash
 # Synthetic — no download required. Prints two tables: beaconing (section 1)
 # and volume-and-egress (section 7), scored against separate corpora.
 voidai bench
+
+# Threat intel: section 8. No corpus to download — the fixture is committed.
+voidai doctor --intel tests/data/example.ioc
 
 # CTU-13 scenario 6 (245MB) and scenario 3 (1.4GB)
 mkdir -p data/ctu13 && cd data/ctu13

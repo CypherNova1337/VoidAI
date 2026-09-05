@@ -83,3 +83,47 @@ class TestDemoDetection:
             for finding in ranked.incident.findings:
                 assert finding.evidence
                 assert all(e.artifacts for e in finding.evidence)
+
+
+class TestTheCommandItself:
+    """The pipeline is tested above; this tests that the command runs it.
+
+    Every assertion above reaches the analyzers directly, which is the right
+    way to test detection and the wrong way to notice that `voidai demo` no
+    longer starts. It did not, for the length of one commit: `demo` invokes
+    `run` as a Python function, `run` is a typer command, and an argument left
+    out of that call arrives as an `OptionInfo` rather than as its default —
+    so adding one option to `run` broke a different command entirely, with a
+    type error naming neither of them.
+    """
+
+    def test_demo_runs_end_to_end(self, tmp_path: Path) -> None:
+        from typer.testing import CliRunner
+
+        from voidai import cli
+
+        result = CliRunner().invoke(cli.app, ["demo", "--keep", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "incident(s)" in result.output
+
+    @pytest.mark.parametrize("command", ["run", "hunt"])
+    def test_the_pipeline_commands_accept_an_intel_path(
+        self, command: str, capture: Path, tmp_path: Path
+    ) -> None:
+        """`--intel` reaches the analyzer from both commands that detect.
+
+        They share `_detect`, and a wiring mistake in one of them is invisible
+        from the other.
+        """
+        from typer.testing import CliRunner
+
+        from voidai import cli
+
+        (tmp_path / "operator.ioc").write_text(
+            f"# name: demo-fixture\n# confidence: 0.9\n# updated: 2025-06-01\n{PATIENT_ZERO}\n"
+        )
+        args = [command, str(capture), "--intel", str(tmp_path), "--no-receipt"]
+        if command == "run":
+            args.append("--no-llm")
+        result = CliRunner().invoke(cli.app, args)
+        assert result.exit_code == 0, result.output

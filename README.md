@@ -87,6 +87,7 @@ the model's job.**
 | **DNS Tunnelling Detector** | Label entropy, subdomain cardinality, query length, qtype skew | **working** ¹ |
 | **PassiveDNS / Zeek DNS / EVE ingest** | Real query names and Suricata alerts | **working** |
 | **Suricata Alert Triage** | Deduplication, estate-wide signature rarity, category weighting | **working** ² |
+| **Threat Intel Matcher** | Local IOC files joined to addresses, netblocks and DNS names; confidence from feed provenance and indicator age, never from traffic volume | **working** ⁴ |
 | **Hunt Query Generator** | Ranked incident → Sigma / KQL / SPL / Zeek, by templating, no model | **working** |
 | **Web Attack Detector** | Signature + statistical hybrid over access logs | planned |
 
@@ -113,6 +114,20 @@ reported but may not corroborate. Missing either cost the infected host three
 queue positions and took corroborated incidents from 3 to 33. The synthetic
 corpus could not have found either, because its traffic always has direction.
 See [`docs/benchmarks.md`](docs/benchmarks.md) §7.
+
+⁴ **Synthetic, and there is no detection rate to measure.** A match is a join,
+not a measurement: the detection was performed by whoever wrote the feed, and
+the only question worth scoring is whether the join is correct and whether
+what it claims is bounded by what the file said. So confidence comes from the
+feed's declared confidence and the indicator's age — **never** from how much
+traffic was seen, since one contact with a known C2 and four thousand carry
+the same intelligence. An undated indicator is *capped* rather than assumed
+fresh, because substituting a zero age would score it higher than a dated one
+a month old and reward the feed that recorded less. Nothing is fetched at
+runtime, ever: IOC sets are files the operator places on disk, and
+`tests/test_offline.py` severs sockets and asserts the pipeline still
+completes. Format and scoring in [`docs/ioc.md`](docs/ioc.md);
+[`docs/benchmarks.md`](docs/benchmarks.md) §8 for what is and is not measured.
 
 ### Measured, on real malware traffic
 
@@ -285,6 +300,7 @@ voidai run ./zeek-logs/                 # detection pipeline over a log director
 voidai run ./zeek-logs/ --model m.gguf   # add the narrative layer
 voidai run ./zeek-logs/ --no-llm        # detection only; findings are unchanged
 voidai run ./zeek-logs/ --evidence      # print the full evidence chain per finding
+voidai run ./zeek-logs/ --intel ./ioc/  # match local IOC files; read from disk, never fetched
 voidai hunt ./zeek-logs/                # ranked incidents → Sigma rules
 voidai hunt ./zeek-logs/ -d kql         # …or KQL, SPL, or a zeek-cut pipeline
 voidai hunt ./zeek-logs/ --out ./rules  # write one file per query
@@ -293,6 +309,7 @@ voidai bench --real <capture>           # score against a labelled real capture
 voidai demo                             # generate a capture and run everything
 voidai lexicon                          # print the complete grammar
 voidai doctor                           # pre-flight: platform, energy source, model
+voidai doctor --intel ./ioc/            # …and what the IOC files actually loaded
 voidai version                          # version and detected power profile
 ```
 
@@ -304,6 +321,8 @@ Every command prints a run receipt unless given `--no-receipt`.
   architecture, results, and what real data changed
 - [`docs/benchmarks.md`](docs/benchmarks.md) — measured accuracy, energy, and
   what real captures changed about the design
+- [`docs/ioc.md`](docs/ioc.md) — the local IOC file format, and why a match is
+  scored from the feed's provenance rather than from the traffic
 - [`docs/models.md`](docs/models.md) — supported open-weight models, and what a
   1.5B model got wrong before the prompt was fixed
 - [`docs/deployment.md`](docs/deployment.md) — Pi 5, Jetson and x86, including

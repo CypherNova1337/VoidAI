@@ -18,6 +18,7 @@ from typing import Protocol, runtime_checkable
 
 import polars as pl
 
+from voidai.ingest.ioc import IndicatorSet
 from voidai.ingest.schema import (
     ALERT_SCHEMA,
     CONNECTION_SCHEMA,
@@ -48,6 +49,14 @@ class AnalysisContext:
     connections: Frame = field(default_factory=lambda: empty(CONNECTION_SCHEMA))
     dns: Frame = field(default_factory=lambda: empty(DNS_SCHEMA))
     alerts: Frame = field(default_factory=lambda: empty(ALERT_SCHEMA))
+
+    #: Indicators the operator placed on disk. Empty unless an IOC file was
+    #: found, and empty is the normal case: intel is optional, and a run
+    #: without it runs one analyzer fewer rather than failing. Loaded here
+    #: with the rest of the ingest so that what an analyzer saw is
+    #: reproducible from the context alone — and loaded from *files*, never
+    #: fetched. See `voidai.ingest.ioc`.
+    indicators: IndicatorSet = field(default_factory=IndicatorSet)
 
     #: Reverse-resolution built from observed DNS answers: ip -> domain.
     ip_to_domain: dict[str, str] = field(default_factory=dict)
