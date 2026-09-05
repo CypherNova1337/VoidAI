@@ -46,9 +46,26 @@ floods; do not add one.
 signal carry a detection alone — that is how a software updater gets reported as
 C2. Absent components renormalise the remaining weights.
 
-**6 · Absent is not zero.** Two separate bugs here came from conflating "the sensor
-did not record this" with "the sensor recorded 0". If a field is unavailable, omit
-the component and let the weights renormalise. Never substitute a value.
+**6 · A claim is bounded by what was measured, not by what the survivors
+score.** Three separate bugs here came from partial evidence producing a
+whole-strength assertion. It applies at three levels, and getting one right
+does not get the others right.
+
+*The component.* If a field is unavailable, omit it and let the weights
+renormalise. Never substitute a value — not zero, not a midpoint, not the
+value that happens to reproduce the right answer.
+
+*The predicate.* If the signal that defines a verb is unavailable, that verb
+is unsayable. `exfiltrates_to` means "anomalous outbound volume"; with no
+directional bytes, emit `transfers_anomalous_volume`, which claims only what
+was seen.
+
+*The corroboration.* A finding resting on partial evidence may be reported,
+but must not count as an independent behaviour. Put it in
+`CorrelationConfig.non_corroborating`. Measured on CTU-13: letting a
+direction-blind volume finding corroborate moved the infected host from rank 2
+to rank 5 and took corroborated incidents from 3 to 33, while contributing no
+evidence on the true positive at all.
 
 **7 · Say which half of your validation is synthetic.** Synthetic data validates
 your assumptions, not your detector — you built both from the same beliefs. If only
@@ -75,16 +92,18 @@ completes.
 
 ## 1 · Volume and egress — `analyzer-egress`
 
-> **Built.** `src/voidai/analyzers/egress.py`, registered, tested, and scored
+> **Done.** `src/voidai/analyzers/egress.py`, registered, tested, and scored
 > against a seeded synthetic corpus — 4 of 4 planted transfers, one false
-> positive on a backup target only one machine uses. CTU-13 has been run once
-> and returned a design correction rather than a score: a predicate may only
-> assert what the sensor measured, so `exfiltrates_to` — an *outbound* claim —
-> is unreachable on NetFlow. **No real accuracy figure is claimed**, and the
-> byte and score gates are still uncalibrated against a real estate;
-> re-scoring scenario 3 is what remains. `docs/benchmarks.md` §7 has the
-> account. Everything below stands as the record of what was designed and why,
-> including the trap that turned out to have a second half.
+> positive on a backup target only one machine uses. On CTU-13 the infected
+> host holds rank 2 of 247 on scenario 3 and rank 1 on scenario 6, with
+> corroborated incidents unchanged at 3 and 1. **Accuracy is synthetic and
+> ranking is real**; the corpus labels spam and scanning rather than
+> transfers, so it offers no precision figure for a volume detector.
+>
+> The trap below turned out to have three levels rather than one, and rule 6
+> was rewritten because of it — read the rule before the section.
+> `docs/benchmarks.md` §7 has the account. Everything below stands as the
+> record of what was designed and why.
 
 **Start here.** Three predicates, no new parser, and CTU-13 validates it the day
 it is written.
@@ -109,8 +128,14 @@ it is written.
 **NetFlow has no directional byte counts.** `ingest/netflow.py` records total flow
 bytes as `orig_bytes` because that is the only figure available, and says so in a
 comment. On NetFlow, `egress_ratio` is therefore *unavailable*, not zero and not
-0.5. Omit the component and let the remaining weights renormalise. Getting this
-wrong reproduces bug 6 above for the third time.
+0.5. Omit the component and let the remaining weights renormalise.
+
+That is rule 6's first level, and it is the level everyone gets right. The
+second and third are what this cluster cost: with the ratio omitted,
+`exfiltrates_to` is unsayable — the verb means *outbound* — and the
+`transfers_anomalous_volume` you emit instead must not corroborate, because it
+rests on partial evidence. Both were measured on CTU-13 rather than reasoned
+about, and both were wrong on the first attempt.
 
 **`contacts_rare_destination` is an alert flood waiting to happen.** It is LOW
 severity and fires on a single cheap signal, so over a real estate it can emit
@@ -341,7 +366,7 @@ vendoring.
 
 | | Cluster | Lift | Why this position |
 |---|---|---|---|
-| 1 | Volume and egress | Low | **Built**, synthetic only — CTU-13 pending, see the section |
+| 1 | Volume and egress | Low | **Done** — and it rewrote rule 6; see the section |
 | 2 | Threat intel | Low | Cheapest; mostly integration |
 | 3 | TLS and DGA | Medium | Small parser; reuses existing entropy work |
 | 4 | Temporal ordering | Low | No parser at all; markedly improves the narrative |

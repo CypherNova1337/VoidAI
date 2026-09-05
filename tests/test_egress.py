@@ -29,7 +29,15 @@ from voidai.correlate import CorrelationConfig, build_queue
 from voidai.eval.benchmark import run_egress_benchmark
 from voidai.eval.synth import EgressCorpusGenerator
 from voidai.ingest.schema import CONNECTION_SCHEMA, conform
-from voidai.lexicon import Predicate, Severity
+from voidai.lexicon import (
+    Artifact,
+    Entity,
+    EntityType,
+    Evidence,
+    Finding,
+    Predicate,
+    Severity,
+)
 
 HOUR = 3600.0
 #: A plausible spread of per-destination outbound totals for one workstation:
@@ -107,7 +115,7 @@ class TestScoreTransfer:
         assert score.egress_ratio is None
 
     def test_omitting_the_ratio_renormalises_rather_than_penalising(self) -> None:
-        """The rule that bug 6 broke twice.
+        """Rule 6 at the component level, which is the level it is famous for.
 
         A sensor that does not record direction must lose a signal, not
         acquire a negative one. So the score with the component omitted has to
@@ -162,6 +170,15 @@ class TestRobustDeviation:
 
 def _capture(rows: list[dict[str, object]]) -> pl.DataFrame:
     return conform(pl.DataFrame(rows), CONNECTION_SCHEMA)
+
+
+def _synthetic_evidence(kind: str) -> Evidence:
+    """Minimal Evidence, for the correlation tests that build Findings by hand."""
+    return Evidence(
+        kind=kind,
+        summary="synthetic evidence",
+        artifacts=[Artifact(source="conn.log", locator=f"line:{abs(hash(kind)) % 1000}")],
+    )
 
 
 def _flows(
@@ -547,5 +564,83 @@ class TestCorrelation:
         assert queue.incidents[0].corroborating_predicates == ()
         assert not queue.corroborated
 
-    def test_the_predicate_is_declared_non_corroborating(self) -> None:
-        assert Predicate.CONTACTS_RARE_DESTINATION in CorrelationConfig().non_corroborating
+    def test_beaconing_plus_volume_is_one_behaviour_not_two(self) -> None:
+        """The CTU-13 scenario 3 regression, in miniature.
+
+        `transfers_anomalous_volume` is what the analyzer says when it cannot
+        say exfiltration — the direction was not recorded, or the signals did
+        not reach the threshold. Partial evidence by construction, and partial
+        evidence may be reported without being counted as a second opinion.
+
+        Measured: letting it corroborate took scenario 3's infected host from
+        queue rank 2 to rank 5 and corroborated incidents from 3 to 33, while
+        contributing nothing to the true positive itself. The finding stays in
+        the incident and still raises the combined confidence through the
+        noisy-OR; it just stops multiplying the priority.
+        """
+        host = Entity(type=EntityType.IP, value="10.0.0.5")
+        beacon = Finding(
+            predicate=Predicate.BEACONS_TO,
+            subject=host,
+            object=Entity(type=EntityType.IP, value="45.83.220.17"),
+            evidence=[_synthetic_evidence("interval_regularity")],
+            confidence=0.90,
+            basis="synthetic",
+            analyzer="beaconing@test",
+        )
+        volume = Finding(
+            predicate=Predicate.TRANSFERS_ANOMALOUS_VOLUME,
+            subject=host,
+            object=Entity(type=EntityType.IP, value="185.220.101.9"),
+            evidence=[_synthetic_evidence("egress_volume")],
+            confidence=0.85,
+            basis="synthetic",
+            analyzer="egress@test",
+        )
+
+        ranked = build_queue([beacon, volume]).incidents[0]
+        assert ranked.corroborating_predicates == (Predicate.BEACONS_TO,)
+        assert ranked.priority == pytest.approx(ranked.combined_confidence)
+        assert "single behaviour" in ranked.rationale
+
+        # Reported, and still contributing: two findings in the incident, and
+        # a combined confidence above either one alone.
+        assert len(ranked.incident.findings) == 2
+        assert ranked.combined_confidence > max(beacon.confidence, volume.confidence)
+
+    def test_exfiltration_does_still_corroborate(self) -> None:
+        """Guards the test above against over-reaching.
+
+        Only the demoted claim is barred from corroborating. `exfiltrates_to`
+        rests on the full four signals including direction, and a host that
+        beacons *and* exfiltrates has genuinely done two separate things.
+        """
+        host = Entity(type=EntityType.IP, value="10.0.0.5")
+        beacon = Finding(
+            predicate=Predicate.BEACONS_TO,
+            subject=host,
+            object=Entity(type=EntityType.IP, value="45.83.220.17"),
+            evidence=[_synthetic_evidence("interval_regularity")],
+            confidence=0.90,
+            basis="synthetic",
+            analyzer="beaconing@test",
+        )
+        exfil = Finding(
+            predicate=Predicate.EXFILTRATES_TO,
+            subject=host,
+            object=Entity(type=EntityType.IP, value="185.220.101.9"),
+            evidence=[_synthetic_evidence("egress_volume")],
+            confidence=0.85,
+            basis="synthetic",
+            analyzer="egress@test",
+        )
+
+        ranked = build_queue([beacon, exfil]).incidents[0]
+        assert len(ranked.corroborating_predicates) == 2
+        assert ranked.priority > ranked.combined_confidence
+
+    def test_the_partial_evidence_predicates_are_declared_non_corroborating(self) -> None:
+        declared = CorrelationConfig().non_corroborating
+        assert Predicate.CONTACTS_RARE_DESTINATION in declared
+        assert Predicate.TRANSFERS_ANOMALOUS_VOLUME in declared
+        assert Predicate.EXFILTRATES_TO not in declared

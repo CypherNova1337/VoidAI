@@ -74,11 +74,25 @@ of real botnet traffic on a university network, every flow labelled `Botnet`,
 | Throughput | 223,651 rec/s | 219,088 rec/s |
 | Peak RSS | 2,672 MB | 634 MB |
 
-**These figures were measured with beaconing and fan-out only.** A third
-analyzer — volume and egress, section 7 — now runs on this path as well, which
-changes the finding count, the incident count and possibly the queue ranks.
-The table is left as measured rather than adjusted by reasoning, and is due a
-re-measurement.
+**The table above was measured with beaconing and fan-out only.** A third
+analyzer — volume and egress, section 7 — now runs on this path as well. It
+has been re-measured with all three, and the cells that were re-run are these:
+
+| | Scenario 3 | Scenario 6 |
+|---|---|---|
+| **Infected host queue rank** | **2 / 247** | **1** |
+| Incidents | 247 | not recorded |
+| Corroborated incidents | 3 | 1 |
+
+The queue rank and the corroboration count both hold. That is the result worth
+noting: a third analyzer emitting findings across the estate left the number
+of corroborated incidents exactly where two analyzers had it — 3 and 1 — which
+is what `non_corroborating` is for and is not what the first two versions of
+the egress analyzer did. Section 7 has that story.
+
+The rows not listed above — findings counts, C2 finding rank, pair precision,
+throughput, peak RSS — were not captured in the re-run and are left as the
+two-analyzer measurement they are. They are not adjusted by reasoning.
 
 Scenario 3's C2 channel (`147.32.84.165 → 38.229.70.20`) is found at 0.958
 confidence — genuinely strong. Scenario 6's Menti channel
@@ -423,14 +437,20 @@ Three bugs the tests caught before this shipped, all in the category table:
 
 ---
 
-## 7. Volume and egress — synthetic accuracy, and one real-capture correction
+## 7. Volume and egress — synthetic accuracy, real-capture ranking
 
-**The accuracy figures in this section are measured on synthetic traffic.**
-CTU-13 has been run against this analyzer exactly once, and what it produced
-was not an accuracy number — it was a design error, described under "What
-CTU-13 changed" below. The corrected analyzer has **not** been re-scored on a
-real capture, so every precision, recall and score below still describes
-traffic built to the same beliefs as the detector.
+Two halves, resting on different evidence, and they are not the halves section
+5 splits.
+
+**Accuracy is synthetic.** Every precision, recall and score below is measured
+against a generator, and describes traffic built to the same beliefs as the
+detector. There is no real precision figure for this analyzer.
+
+**Ranking behaviour is real.** CTU-13 has been run against it, and what it
+returned was not an accuracy number — it was two design errors and the
+measurements that fixed them, under "What CTU-13 changed" onward. Both
+captures are now restored with the analyzer running: scenario 3's infected
+host at rank 2 of 247, scenario 6's at rank 1.
 
 The analyzer claims three predicates that are one measurement seen at three
 strengths: `exfiltrates_to` (critical/high), `transfers_anomalous_volume`
@@ -564,10 +584,15 @@ out of the volume band into `contacts_rare_destination` at LOW.
 **Thresholds.** `min_bytes` (1 MB), `rare_min_bytes` (100 KB),
 `exfil_threshold` (0.70), `volume_threshold` (0.45) and
 `rare_score_threshold` (0.30) are set from the shape of the problem, not from
-a measurement. They are the numbers a real capture would move, and `min_bytes`
-is the one with a known problem already: it counts outbound bytes on Zeek and
-whole-flow bytes on NetFlow, because that is the only figure NetFlow carries.
-The same number is a lower bar on one sensor than the other.
+a measurement.
+
+`min_bytes` is the one CTU-13 has something to say about, and what it says is
+*leave it alone* — the real command-and-control transfer it catches is smaller
+than the noise it would have to exclude, and scores lower too. "Why the byte
+floor is not the lever" below has the numbers. It also means what `min_bytes`
+counts differs by sensor: originator bytes on Zeek, whole-flow bytes on
+NetFlow. That is a property of the telemetry, recorded so a reader knows what
+the floor means on theirs.
 
 **Alert burden on a real estate.** `contacts_rare_destination` is the
 predicate the roadmap flags as a flood waiting to happen, and the corpus
@@ -579,16 +604,13 @@ twelve synthetic hosts can answer. It is also in
 `CorrelationConfig.non_corroborating`, so however many it emits, it can
 enrich an incident other evidence created but never create or promote one.
 
-**Accuracy on a real capture.** CTU-13 has been run once, against the version
-of this analyzer described under "What CTU-13 changed" below, and it produced
-a design correction rather than an accuracy figure. **The corrected analyzer
-has not been re-scored**, so no real precision, recall or queue rank is
-claimed for it here.
-
-The CTU-13 figures in section 2 predate this analyzer — they were measured
-with beaconing and fan-out only. Adding a third analyzer changes the finding
-count, the incident count and the queue ranks, so those numbers are due a
-re-measurement rather than an update in place.
+**Precision and recall on a real capture.** CTU-13 gives queue ranks and
+corroboration counts for this analyzer, reported below, but not a precision
+figure: `Background` in CTU-13 means unlabelled rather than benign, and the
+label set covers spam, scanning and click fraud rather than transfers, so
+there is nothing to score a volume detector's false-alarm rate against. The
+one real true positive it has — scenario 6's Menti channel, at 2.16 MB — is a
+single data point, not a recall measurement.
 
 ### What CTU-13 changed: omitting a component is not enough if you keep the claim
 
@@ -622,12 +644,14 @@ no direction observed, only the second sentence is grounded — and the first
 was being asserted at CRITICAL, 176 times, each one adding a distinct
 predicate to a host and multiplying its priority.
 
-**This is rule 6 one level up.** "Absent is not zero" is usually read as a
-rule about arithmetic: do not substitute a value for a measurement you do not
-have. It is really a rule about claims. A component dropped from a score and a
-claim left standing that the component was the only evidence for are the same
-error, and the second is harder to see, because the arithmetic looks
-scrupulous right up to the point where the verb is chosen.
+**This is rule 6 one level up.** "Absent is not zero" was written as a rule
+about arithmetic: do not substitute a value for a measurement you do not have.
+It is really a rule about claims. A component dropped from a score, and a
+claim left standing that the component was the only evidence for, are the same
+error — and the second is harder to see, because the arithmetic looks
+scrupulous right up to the point where the verb is chosen. The roadmap's rule
+6 now says so in three levels rather than one, because there turned out to be
+a third.
 
 The fix is that the predicate is now a function of **which signals were
 measured**, and only then of the score. `exfiltrates_to` requires the egress
@@ -647,26 +671,77 @@ only exists once a real sensor that cannot supply it is in the picture, which
 is the argument for running on real captures early, restated for the fourth
 time on this page.
 
-Two things this correction does *not* do, stated plainly because the numbers
-above make it tempting to assume otherwise:
+### And the predicate fix alone did not restore the rank
 
-**It does not by itself restore rank 2.** Demoting the verb changes what is
-claimed and at what severity. It does not change how many pairs are reported,
-what confidence they carry, or how many distinct predicates a host ends up
-with — and queue priority is noisy-OR over the strongest finding per predicate
-times a corroboration multiplier, all of which are unchanged. Scenario 3's
-infected host should be expected at rank 5 still, with 33 incidents now
-corroborating at MEDIUM rather than CRITICAL. What moves the rank is whether
-35 of the estate's hosts genuinely warrant a volume finding at all, which is a
-question about gates.
+It was not expected to. Demoting the verb changes what is claimed and at what
+severity; it does not change how many pairs are reported, what confidence they
+carry, or how many *distinct predicates* a host ends up with — and queue
+priority is a noisy-OR over the strongest finding per predicate, multiplied by
+the count of distinct behaviours. A host that was corroborating with
+`exfiltrates_to` corroborates identically with `transfers_anomalous_volume`.
+Re-run, scenario 3 stayed at rank 5.
 
-**Those gates are still uncalibrated.** `min_bytes` is 1 MB of *outbound*
-bytes — but on NetFlow `orig_bytes` holds the whole flow's total, both
-directions, because that is the only figure the format carries. The same
-number is therefore a materially lower bar on NetFlow than on Zeek, and it was
-chosen against neither. Re-running scenario 3 against the corrected analyzer
-would say how much of the 176 survives, and that is the measurement that
-should set the floor.
+The third level of rule 6 is what moved it. `transfers_anomalous_volume` is,
+by construction, the claim the analyzer makes when it *cannot* make the
+stronger one — the direction was not recorded, or the four signals did not
+reach the exfiltration threshold. Partial evidence, every time. Partial
+evidence may be reported; it may not be counted as an independent behaviour.
+So the predicate joins `CorrelationConfig.non_corroborating`, where it still
+contributes to the incident's combined confidence through the noisy-OR and
+still appears in front of the analyst, but no longer multiplies a priority.
+
+| | before this analyzer | predicate by score | + predicate grounded | + volume non-corroborating |
+|---|---|---|---|---|
+| **Scenario 3 — infected host rank** | **2 / 214** | 5 / 247 | 5 / 247 | **2 / 247** |
+| Scenario 3 — corroborated incidents | 3 | 33 | 33 | **3** |
+| **Scenario 6 — infected host rank** | **1 / 133** | 1 | 1 | **1** |
+| Scenario 6 — corroborated incidents | 1 | not recorded | 16 | **1** |
+
+Scenario 6's rank is given without a denominator in the last three columns,
+and one of its corroboration counts was not captured, because those runs were
+not recorded in full. The cells are left empty rather than filled in from the
+column beside them.
+
+Both captures are restored, with a third analyzer running and its findings
+kept. The scenario 6 bot's incident still carries its
+`transfers_anomalous_volume` finding: evidence retained, false promotion
+removed. That is the outcome to want from this rule — not silence, but a
+finding that informs without inflating.
+
+### Why the byte floor is not the lever, and will not be moved
+
+The obvious response to 176 findings is to raise `min_bytes`. Three
+measurements say not to.
+
+**The scenario 6 volume finding sits on the real Menti command-and-control
+channel, at 2.16 MB.** It is the only real-world true positive this analyzer
+has. A 10 MB floor — the size that would have suppressed most of scenario 3's
+noise — discards it.
+
+**Scenario 3's infected host has no volume finding at all.** So on that
+capture the floor is being tuned entirely against traffic that contains no
+true positive to protect.
+
+**And confidence does not separate them either.** Scenario 3's noise scores a
+median of **0.851**. The scenario 6 true positive scores **0.487**. The noise
+outranks the real detection by a wide margin on the very number a threshold
+would sort by. There is no value of `min_bytes`, and no value of
+`volume_threshold`, that keeps the true positive and drops the noise, because
+on both axes the noise is on the wrong side of it.
+
+This is the same lesson the alert-burden section reached from the other
+direction: when a detector's own axis cannot separate signal from noise, the
+answer is not a tighter threshold on that axis. It is to stop letting the
+finding carry more weight than its evidence supports.
+
+**`orig_bytes` does mean different things on different sensors, and that is
+recorded rather than tuned around.** On Zeek it is the originator's bytes; on
+NetFlow it is the whole flow's total in both directions, because that is the
+only figure the format carries and `ingest/netflow.py` says so in a comment.
+The same `min_bytes` constant is therefore a lower bar on NetFlow than on
+Zeek. That is a real property of the telemetry, documented here so a reader
+knows what the floor means on their sensor — not a defect to be corrected by
+picking a number that suits one capture.
 
 ---
 
@@ -678,12 +753,13 @@ CTU-13 carries neither DNS query names nor alerts, so on the real captures the
 signal is still only two-valued. Closing that needs a capture with network,
 DNS and alert telemetry together — which is a data problem, not a code one.
 
-**Volume and egress has no real accuracy figure.** CTU-13 has been run
-against it once and returned a design correction rather than a score — section
-7 has the account — and the corrected analyzer has not been re-scored. The
-gates that decide how much it emits on a real estate were set from the shape
-of the problem and remain uncalibrated; scenario 3 is what would calibrate
-them.
+**Volume and egress has no real accuracy figure, and may not get one here.**
+CTU-13 gives it queue ranks and corroboration counts — section 7 — but not a
+precision number: the corpus labels spam, scanning and click fraud rather than
+transfers, so there is nothing to score a volume detector against. Its one
+real true positive is scenario 6's Menti channel at 2.16 MB. Closing that
+needs a capture with labelled exfiltration in it, which is a data problem
+rather than a code one.
 
 **The estate has no identity.** VoidAI does not know which of its hosts is a
 mail relay, a resolver, or a domain controller. `147.32.84.229` ranks first on

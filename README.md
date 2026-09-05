@@ -100,18 +100,19 @@ fire on real tunnels. The difference is recorded rather than blurred.
 ² Synthetic validation. The Stratosphere captures carry NetFlow and
 passivedns but no EVE output, so no real alert stream was reachable.
 
-³ **Accuracy is synthetic; no real figure is claimed.** Against a seeded
-corpus whose benign traffic is a nightly backup, a cloud sync and a software
-mirror — large, outbound and scheduled, which is three of the four things
-exfiltration is — it finds 4 of 4 planted transfers with one false positive,
-on a backup target only one machine uses. CTU-13 has been run against it once
-and returned a design correction rather than a score: the predicate a finding
-may use is now a function of **which signals the sensor supplied**, not of the
-number they add up to, so a claim about *outbound* volume is unreachable on
-NetFlow, which records no direction. That cost the infected host three queue
-positions before it was caught, and the synthetic corpus could not have found
-it — its traffic always has direction. See
-[`docs/benchmarks.md`](docs/benchmarks.md) §7.
+³ **Accuracy synthetic, ranking real.** Against a seeded corpus whose benign
+traffic is a nightly backup, a cloud sync and a software mirror — large,
+outbound and scheduled, which is three of the four things exfiltration is — it
+finds 4 of 4 planted transfers with one false positive, on a backup target
+only one machine uses. CTU-13 returned no precision figure but two design
+corrections, both about the same thing: **a claim is bounded by what was
+measured.** A verb whose defining signal is missing is unsayable, so
+`exfiltrates_to` — an *outbound* claim — is unreachable on NetFlow, which
+records no direction; and a finding resting on partial evidence may be
+reported but may not corroborate. Missing either cost the infected host three
+queue positions and took corroborated incidents from 3 to 33. The synthetic
+corpus could not have found either, because its traffic always has direction.
+See [`docs/benchmarks.md`](docs/benchmarks.md) §7.
 
 ### Measured, on real malware traffic
 
@@ -127,9 +128,11 @@ real botnet captures on a university network, with per-flow ground truth.
 | Throughput | 224k rec/s | 219k rec/s |
 | Peak RSS | 2.6 GB | 0.6 GB |
 
-Measured with beaconing and fan-out. The volume-and-egress analyzer now runs
-on this path too and these figures predate it, so they are due a
-re-measurement rather than an adjustment by reasoning.
+Measured with beaconing and fan-out. Re-run with the volume-and-egress
+analyzer added, the infected host holds rank 2 (of 247) on scenario 3 and rank
+1 on scenario 6, with corroborated incidents unchanged at 3 and 1. The other
+rows were not re-captured and are left as the two-analyzer measurement they
+are.
 
 Reproduce with `voidai bench` and `voidai bench --real <capture>`.
 

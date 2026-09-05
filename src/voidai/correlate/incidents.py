@@ -59,22 +59,39 @@ class CorrelationConfig:
     #: cannot climb past one with strong, genuinely independent evidence.
     max_corroboration_multiplier: float = 2.5
 
-    #: Predicates that describe environment rather than host behaviour. They
-    #: contribute evidence but do not count toward corroboration, so a pair of
-    #: bookkeeping observations cannot masquerade as two opinions.
+    #: Predicates that contribute evidence but do not count as an independent
+    #: behaviour. A finding here still raises its host's combined confidence
+    #: through the noisy-OR and still appears in the incident an analyst
+    #: reads; what it may not do is multiply the priority, because a
+    #: multiplier is a claim that two *separate* things were seen.
     #:
-    #: `contacts_rare_destination` belongs here for a different reason than
-    #: the relational two. It is a real observation about the host, but it
-    #: rests on a single cheap signal — estate-wide prevalence — and every
-    #: host that talks to anything unusual earns one. Letting it multiply a
-    #: priority would hand the corroboration bonus to the quietest corner of
-    #: the estate. It enriches an incident other evidence already created,
-    #: and cannot create one on its own.
+    #: Three reasons put a predicate in this set, and all three are the same
+    #: rule at different levels — see roadmap rule 6.
+    #:
+    #: `shares_infrastructure_with` and `precedes` describe the environment,
+    #: or VoidAI's own reasoning about two observations. They are bookkeeping,
+    #: and a pair of bookkeeping entries is not two opinions.
+    #:
+    #: `contacts_rare_destination` is a real observation about the host, but
+    #: it rests on a single cheap signal — estate-wide prevalence — and every
+    #: host that talks to anything unusual earns one.
+    #:
+    #: `transfers_anomalous_volume` is the claim the egress analyzer makes
+    #: when it *cannot* make the stronger one: either the sensor recorded no
+    #: direction, or the four signals did not reach the exfiltration
+    #: threshold. Partial evidence, by construction. Measured on CTU-13
+    #: scenario 3: letting it corroborate moved the infected host from queue
+    #: rank 2 to rank 5 and took corroborated incidents from 3 to 33, while
+    #: contributing nothing to the true positive — which had no volume
+    #: finding at all. On scenario 6 the bot's incident keeps its volume
+    #: finding and still ranks 1, which is the shape wanted: evidence
+    #: retained, false promotion removed.
     non_corroborating: frozenset[Predicate] = frozenset(
         {
             Predicate.SHARES_INFRASTRUCTURE_WITH,
             Predicate.PRECEDES,
             Predicate.CONTACTS_RARE_DESTINATION,
+            Predicate.TRANSFERS_ANOMALOUS_VOLUME,
         }
     )
 
