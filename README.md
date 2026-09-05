@@ -100,16 +100,18 @@ fire on real tunnels. The difference is recorded rather than blurred.
 ² Synthetic validation. The Stratosphere captures carry NetFlow and
 passivedns but no EVE output, so no real alert stream was reachable.
 
-³ **Synthetic on both halves, and no CTU-13 figure is claimed** — the corpus
-was not reachable from the environment this analyzer was written in. Against a
-seeded corpus whose benign traffic is a nightly backup, a cloud sync and a
-software mirror — large, outbound and scheduled, which is three of the four
-things exfiltration is — it finds 4 of 4 planted transfers with one false
-positive, on a backup target only one machine uses. The analyzer is wired into
-`voidai bench --real` and waiting for the real half. See
-[`docs/benchmarks.md`](docs/benchmarks.md) §7, which also records what happens
-when the one measurement NetFlow cannot supply is *defaulted* rather than
-omitted: detection drops from 4 of 4 to zero, silently.
+³ **Accuracy is synthetic; no real figure is claimed.** Against a seeded
+corpus whose benign traffic is a nightly backup, a cloud sync and a software
+mirror — large, outbound and scheduled, which is three of the four things
+exfiltration is — it finds 4 of 4 planted transfers with one false positive,
+on a backup target only one machine uses. CTU-13 has been run against it once
+and returned a design correction rather than a score: the predicate a finding
+may use is now a function of **which signals the sensor supplied**, not of the
+number they add up to, so a claim about *outbound* volume is unreachable on
+NetFlow, which records no direction. That cost the infected host three queue
+positions before it was caught, and the synthetic corpus could not have found
+it — its traffic always has direction. See
+[`docs/benchmarks.md`](docs/benchmarks.md) §7.
 
 ### Measured, on real malware traffic
 

@@ -46,25 +46,41 @@ piece of evidence for the claim being made.
 
 The consequence is recorded on every finding rather than hidden: the evidence
 payload carries `egress_ratio: null` and the basis line says the component was
-omitted, so an analyst reading an `exfiltrates_to` finding derived from
-NetFlow can see that VoidAI measured the volume and the rarity but never
-observed which way the bytes went.
+omitted.
+
+**And the claim changes with it.** `exfiltrates_to` asserts an anomalous
+*outbound* volume. With no direction observed, "outbound" is a word the
+telemetry cannot support, so the predicate is unreachable on NetFlow no matter
+what the remaining three signals score — the strongest available claim is
+`transfers_anomalous_volume`, which asserts only that the volume between two
+endpoints departs from a baseline, and which the deviation component does
+ground. Dropping a measurement while keeping the claim it existed to justify
+is the same mistake as substituting a value for it, made one level up where it
+is harder to see.
+
+That is not a hypothetical. Scored before this rule existed, CTU-13 scenario 3
+produced 176 `exfiltrates_to` findings across 35 hosts at a median confidence
+of 0.892 — every one a critical outbound accusation derived from telemetry
+with no direction in it — and the corroboration they earned moved the infected
+host from queue rank 2 to rank 5. `docs/benchmarks.md` §7 has the account.
 
 ## One predicate per source
 
-The three predicates this analyzer claims are bands of one measurement, not
-three independent observations:
+The three predicates this analyzer claims are one measurement seen at three
+strengths, not three independent observations. Which one a pair can support is
+decided first by *what was measured* and only then by how high it scored:
 
-    exfiltrates_to               (critical/high)  the full picture
-    transfers_anomalous_volume   (medium)         volume against baseline
+    exfiltrates_to               (critical/high)  needs the egress ratio
+    transfers_anomalous_volume   (medium)         needs the volume deviation
     contacts_rare_destination    (low)            prevalence alone
 
-So a source emits findings in its **highest** band only. `voidai.correlate`
-multiplies an incident's priority by the number of distinct predicates on the
-host, and a host that earned `exfiltrates_to` would otherwise corroborate
-itself by restating the same score under a weaker verb — the failure mode the
-`non_corroborating` set exists to prevent for `precedes`. A host exfiltrating
-to two destinations still gets a finding for each, under the one predicate.
+A source then emits findings in its **highest available** band only.
+`voidai.correlate` multiplies an incident's priority by the number of distinct
+predicates on the host, and a host that earned `exfiltrates_to` would
+otherwise corroborate itself by restating the same score under a weaker verb —
+the failure mode the `non_corroborating` set exists to prevent for `precedes`.
+A host exfiltrating to two destinations still gets a finding for each, under
+the one predicate.
 
 `contacts_rare_destination` is additionally in `non_corroborating`, because it
 fires on a single cheap signal and is LOW severity: it enriches an incident
@@ -532,19 +548,36 @@ class EgressAnalyzer(BaseAnalyzer):
     def _band(self, score: EgressScore, row: dict[str, object]) -> Predicate | None:
         """Which claim, if any, this pair supports.
 
-        Checked strongest first, and only one is ever returned: the bands are
-        thresholds on one score, so a pair that supports the strong claim does
-        not additionally support the weak one.
+        Two questions in order, and the first one is not about the score.
+
+        **Which signals were measured?** Each predicate names something, and a
+        finding may not name what the sensor did not observe. `exfiltrates_to`
+        asserts an anomalous *outbound* volume, so it requires the egress
+        ratio; `transfers_anomalous_volume` asserts only that the volume
+        between two endpoints departs from a baseline, so it requires the
+        deviation. A sensor that recorded no direction can support the second
+        claim and not the first, however high the score climbs.
+
+        **Then, how high did it score?** Bands are thresholds on one score, so
+        only one is ever returned: a pair supporting the strong claim does not
+        additionally support the weak one.
+
+        Reversing that order is what CTU-13 caught. Scoring first and letting
+        the number pick the verb promoted 176 NetFlow pairs to a critical
+        outbound claim on telemetry with no direction in it, and the
+        corroboration those findings earned pushed the infected host down the
+        queue. Omitting a component and then keeping the claim it existed to
+        justify is the same error as defaulting the component, one level up.
         """
         config = self.config
 
         if score.orig_bytes >= config.min_bytes:
-            if score.score >= config.exfil_threshold:
+            measured_deviation = (
+                score.components.get("volume_deviation", 0.0) >= config.min_volume_deviation
+            )
+            if "egress_ratio" in score.components and score.score >= config.exfil_threshold:
                 return Predicate.EXFILTRATES_TO
-            if (
-                score.score >= config.volume_threshold
-                and score.components.get("volume_deviation", 0.0) >= config.min_volume_deviation
-            ):
+            if score.score >= config.volume_threshold and measured_deviation:
                 return Predicate.TRANSFERS_ANOMALOUS_VOLUME
 
         if (

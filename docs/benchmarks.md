@@ -423,18 +423,22 @@ Three bugs the tests caught before this shipped, all in the category table:
 
 ---
 
-## 7. Volume and egress — synthetic on both halves, CTU-13 not yet run
+## 7. Volume and egress — synthetic accuracy, and one real-capture correction
 
-**Every number in this section is measured on synthetic traffic. Neither the
-sensitivity nor the specificity figures below have been reproduced on a real
-capture, and no CTU-13 result is reported here because none has been
-measured.** Section 5 splits its two halves because one of them was real; this
-section has no real half at all yet, and saying so is the whole preamble.
+**The accuracy figures in this section are measured on synthetic traffic.**
+CTU-13 has been run against this analyzer exactly once, and what it produced
+was not an accuracy number — it was a design error, described under "What
+CTU-13 changed" below. The corrected analyzer has **not** been re-scored on a
+real capture, so every precision, recall and score below still describes
+traffic built to the same beliefs as the detector.
 
-The analyzer claims three predicates that are bands of one measurement:
-`exfiltrates_to` (critical/high), `transfers_anomalous_volume` (medium), and
-`contacts_rare_destination` (low). Four signals, combined the same way
-beaconing combines its six:
+The analyzer claims three predicates that are one measurement seen at three
+strengths: `exfiltrates_to` (critical/high), `transfers_anomalous_volume`
+(medium), and `contacts_rare_destination` (low). Which one a pair can support
+is decided first by *which signals the sensor actually supplied* and only then
+by how high the combined score reached — see "What CTU-13 changed" for why
+that order is not an implementation detail. Four signals, combined the same
+way beaconing combines its six:
 
 | Component | Measure | Weight |
 |---|---|---|
@@ -527,12 +531,12 @@ record carries no directional split — so there is no `resp_bytes` column at
 all. The egress ratio is *unavailable*, which is not zero and not 0.5. Run
 against the same corpus with the responder column removed:
 
-| Telemetry | Ratio handling | Planted transfers found | Top score |
-|---|---|---|---|
-| Zeek `conn.log` | measured | **4 of 4** | 0.946 |
-| NetFlow-shaped | **omitted**, weights renormalise | **4 of 4** | 0.923 |
-| NetFlow-shaped | defaulted to 0.5 ("neutral") | **0 of 4** | — |
-| NetFlow-shaped | defaulted to 1.0 ("it's all we have") | 4 of 4 | 0.946 |
+| Telemetry | Ratio handling | Planted transfers found | Top score | Strongest claim |
+|---|---|---|---|---|
+| Zeek `conn.log` | measured | **4 of 4** | 0.946 | `exfiltrates_to`, CRITICAL |
+| NetFlow-shaped | **omitted**, weights renormalise | **4 of 4** | 0.923 | `transfers_anomalous_volume`, MEDIUM |
+| NetFlow-shaped | defaulted to 0.5 ("neutral") | **0 of 4** | — | — |
+| NetFlow-shaped | defaulted to 1.0 ("it's all we have") | 4 of 4 | 0.946 | `exfiltrates_to`, CRITICAL |
 
 Omitting the component costs 0.02 to 0.06 of score as the remaining weights
 redistribute, and finds everything. Substituting a neutral 0.5 scores the
@@ -549,17 +553,21 @@ that looks wrong. The component is omitted, the evidence payload carries
 `egress_ratio: null`, and the basis line on every affected finding names the
 omission.
 
-The demotion in that second row is worth noting too: with direction
-unobservable, the lone-host backup falls out of the volume band into
-`contacts_rare_destination` at LOW. Less telemetry produces a weaker claim
-rather than the same claim with a worse number.
+The last column is the part that took a real capture to get right. Less
+telemetry produces a *weaker claim*, not the same claim with a worse number:
+the same transfers that are called exfiltration on Zeek are called an
+anomalous volume on NetFlow, and the lone-host backup falls further still,
+out of the volume band into `contacts_rare_destination` at LOW.
 
 ### What is not measured
 
 **Thresholds.** `min_bytes` (1 MB), `rare_min_bytes` (100 KB),
 `exfil_threshold` (0.70), `volume_threshold` (0.45) and
 `rare_score_threshold` (0.30) are set from the shape of the problem, not from
-a measurement. They are the numbers a real capture would move.
+a measurement. They are the numbers a real capture would move, and `min_bytes`
+is the one with a known problem already: it counts outbound bytes on Zeek and
+whole-flow bytes on NetFlow, because that is the only figure NetFlow carries.
+The same number is a lower bar on one sensor than the other.
 
 **Alert burden on a real estate.** `contacts_rare_destination` is the
 predicate the roadmap flags as a flood waiting to happen, and the corpus
@@ -571,17 +579,94 @@ twelve synthetic hosts can answer. It is also in
 `CorrelationConfig.non_corroborating`, so however many it emits, it can
 enrich an incident other evidence created but never create or promote one.
 
-**CTU-13.** The analyzer is wired into `voidai bench --real` and runs
-alongside beaconing and fan-out on the real-capture path, where NetFlow
-exercises the omission rule above on real traffic. **It has not been run**:
-the corpus was not reachable from the environment this work was done in.
-Until it is, this section claims a detector that works on traffic built to the
-same beliefs as the detector, and nothing more.
+**Accuracy on a real capture.** CTU-13 has been run once, against the version
+of this analyzer described under "What CTU-13 changed" below, and it produced
+a design correction rather than an accuracy figure. **The corrected analyzer
+has not been re-scored**, so no real precision, recall or queue rank is
+claimed for it here.
 
 The CTU-13 figures in section 2 predate this analyzer — they were measured
 with beaconing and fan-out only. Adding a third analyzer changes the finding
-count, the incident count and possibly the queue ranks, so those numbers are
-due a re-measurement rather than an update in place.
+count, the incident count and the queue ranks, so those numbers are due a
+re-measurement rather than an update in place.
+
+### What CTU-13 changed: omitting a component is not enough if you keep the claim
+
+The analyzer's first version scored four signals, omitted any it could not
+measure, and then picked its predicate from the resulting number:
+`exfiltrates_to` above 0.70, `transfers_anomalous_volume` above 0.45. That
+passed every synthetic test on this page, including all of the omission tests
+in the table above.
+
+Run against CTU-13 scenario 3, it regressed the thing the whole project is
+ranked on:
+
+| | before this analyzer | with it, predicate by score | change |
+|---|---|---|---|
+| **Infected host queue rank** | **2 / 214** | **5 / 247** | **worse** |
+| Corroborated incidents | 3 | 33 | 11x |
+
+Scenario 6 held rank 1. The cause was **176 `exfiltrates_to` findings across
+35 hosts, median confidence 0.892, every one of them CRITICAL** — and every
+one of them a claim about *outbound* volume made on NetFlow, which does not
+record a direction.
+
+The omission logic was right and did exactly what it was written to do: the
+egress ratio was dropped, the weights renormalised across volume deviation,
+destination rarity and novelty, and those three still reached 0.892 on real
+traffic. What was wrong was that the analyzer then kept the verb the omitted
+component existed to justify. `exfiltrates_to` is defined in the Lexicon as
+"transfers an anomalous outbound volume"; `transfers_anomalous_volume` as
+"byte volume between subject and target deviates from its own baseline". With
+no direction observed, only the second sentence is grounded — and the first
+was being asserted at CRITICAL, 176 times, each one adding a distinct
+predicate to a host and multiplying its priority.
+
+**This is rule 6 one level up.** "Absent is not zero" is usually read as a
+rule about arithmetic: do not substitute a value for a measurement you do not
+have. It is really a rule about claims. A component dropped from a score and a
+claim left standing that the component was the only evidence for are the same
+error, and the second is harder to see, because the arithmetic looks
+scrupulous right up to the point where the verb is chosen.
+
+The fix is that the predicate is now a function of **which signals were
+measured**, and only then of the score. `exfiltrates_to` requires the egress
+ratio; `transfers_anomalous_volume` requires the volume deviation. On NetFlow
+the critical claim is unreachable at any score, and a test asserts that using
+a transfer that *does* clear the exfiltration threshold with the ratio
+omitted — so the gate cannot quietly become the threshold doing the work.
+
+**The synthetic corpus could not have caught this.** Its traffic is Zeek-
+shaped and carries `resp_bytes` on every flow, so the ratio is always
+measured, the exfiltration claim is always grounded, and the bug is invisible
+by construction. The corpus can be run with the column dropped — the table
+above does exactly that — but that only tests whether the *score* survives
+omission, which it did. Nothing in a corpus that always has direction can ask
+whether a claim about direction should still be made without it. That question
+only exists once a real sensor that cannot supply it is in the picture, which
+is the argument for running on real captures early, restated for the fourth
+time on this page.
+
+Two things this correction does *not* do, stated plainly because the numbers
+above make it tempting to assume otherwise:
+
+**It does not by itself restore rank 2.** Demoting the verb changes what is
+claimed and at what severity. It does not change how many pairs are reported,
+what confidence they carry, or how many distinct predicates a host ends up
+with — and queue priority is noisy-OR over the strongest finding per predicate
+times a corroboration multiplier, all of which are unchanged. Scenario 3's
+infected host should be expected at rank 5 still, with 33 incidents now
+corroborating at MEDIUM rather than CRITICAL. What moves the rank is whether
+35 of the estate's hosts genuinely warrant a volume finding at all, which is a
+question about gates.
+
+**Those gates are still uncalibrated.** `min_bytes` is 1 MB of *outbound*
+bytes — but on NetFlow `orig_bytes` holds the whole flow's total, both
+directions, because that is the only figure the format carries. The same
+number is therefore a materially lower bar on NetFlow than on Zeek, and it was
+chosen against neither. Re-running scenario 3 against the corrected analyzer
+would say how much of the 176 survives, and that is the measurement that
+should set the floor.
 
 ---
 
@@ -593,10 +678,12 @@ CTU-13 carries neither DNS query names nor alerts, so on the real captures the
 signal is still only two-valued. Closing that needs a capture with network,
 DNS and alert telemetry together — which is a data problem, not a code one.
 
-**Volume and egress has no real half at all.** Section 7 reports it in full
-and reports nothing from a real capture, because CTU-13 was not reachable from
-the environment the analyzer was written in. It is wired into
-`voidai bench --real` and waiting.
+**Volume and egress has no real accuracy figure.** CTU-13 has been run
+against it once and returned a design correction rather than a score — section
+7 has the account — and the corrected analyzer has not been re-scored. The
+gates that decide how much it emits on a real estate were set from the shape
+of the problem and remain uncalibrated; scenario 3 is what would calibrate
+them.
 
 **The estate has no identity.** VoidAI does not know which of its hosts is a
 mail relay, a resolver, or a domain controller. `147.32.84.229` ranks first on

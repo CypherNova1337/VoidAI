@@ -2,12 +2,14 @@
 
 Two things here are load-bearing and everything else supports them.
 
-The first is that an unavailable measurement is *omitted*, not defaulted.
-NetFlow records no directional byte split, and the difference between omitting
-the egress-ratio component and substituting a neutral 0.5 for it is the
-difference between finding four planted transfers and finding none — asserted
-below with both numbers, because the failure is silent and the code that
-causes it looks reasonable.
+The first is that an unavailable measurement is *omitted*, not defaulted,
+and that the claim shrinks to fit what was measured. NetFlow records no
+directional byte split. Substituting a neutral 0.5 for the egress ratio is the
+difference between finding four planted transfers and finding none; keeping
+the *outbound* claim after omitting the component that grounds it is the same
+error one level up, and it cost the CTU-13 infected host three queue
+positions. Both are asserted below with numbers, because both fail silently
+and the code that causes either looks reasonable.
 
 The second is that a nightly backup is not a data breach. It is large,
 outbound and scheduled, which is three of the four things exfiltration is, and
@@ -259,6 +261,61 @@ class TestNetFlowShapedTelemetry:
         found = {(f.subject.value, f.object.value) for f in omitted}
         assert planted <= found, "omitting the component lost a planted transfer"
         assert not [f for f in defaulted if (f.subject.value, f.object.value) in planted]
+
+    def test_netflow_shaped_telemetry_can_never_claim_exfiltration(self) -> None:
+        """The regression CTU-13 caught, pinned from the measurement side.
+
+        `exfiltrates_to` asserts an anomalous *outbound* volume. Direction is
+        the one thing NetFlow does not record, so the predicate is unreachable
+        on it — and unreachable is not the same as "scores too low to reach".
+        The assertions below are deliberately built on a transfer that *does*
+        clear the exfiltration threshold with the ratio omitted: the gate has
+        to be on what was measured, not on the number that survived
+        renormalising, or it will let the claim back in the moment the other
+        three signals are strong enough.
+
+        Scored the other way round, CTU-13 scenario 3 produced 176 critical
+        outbound accusations across 35 hosts from telemetry with no direction
+        in it, and the corroboration they earned moved the infected host from
+        queue rank 2 to rank 5.
+        """
+        corpus = EgressCorpusGenerator(seed=1337).generate(hours=24.0)
+
+        for label, frame in (
+            ("column absent", corpus.connections.drop("resp_bytes")),
+            (
+                "column unpopulated",
+                corpus.connections.with_columns(
+                    pl.lit(None, dtype=pl.Int64).alias("resp_bytes")
+                ),
+            ),
+        ):
+            findings = EgressAnalyzer().analyze(AnalysisContext(connections=frame))
+            assert findings, label
+            assert not [
+                f for f in findings if f.predicate is Predicate.EXFILTRATES_TO
+            ], f"claimed outbound exfiltration with no direction recorded ({label})"
+            assert not [
+                f for f in findings if f.severity is Severity.CRITICAL
+            ], f"a critical claim survived on ungrounded telemetry ({label})"
+
+            # The gate is not the threshold doing the work by accident.
+            strongest = max(findings, key=lambda f: f.confidence)
+            assert strongest.confidence >= EgressConfig().exfil_threshold
+            assert strongest.predicate is Predicate.TRANSFERS_ANOMALOUS_VOLUME
+
+    def test_the_same_traffic_does_claim_exfiltration_when_direction_is_recorded(
+        self,
+    ) -> None:
+        """Guards the test above against passing for the wrong reason.
+
+        Same corpus, same transfers, `resp_bytes` present. The demotion has to
+        be the missing measurement rather than a gate that quietly made the
+        predicate unreachable everywhere.
+        """
+        corpus = EgressCorpusGenerator(seed=1337).generate(hours=24.0)
+        findings = EgressAnalyzer().analyze(AnalysisContext(connections=corpus.connections))
+        assert [f for f in findings if f.predicate is Predicate.EXFILTRATES_TO]
 
     def test_partially_populated_column_is_not_treated_as_measured(self) -> None:
         """A responder figure on a tenth of the flows describes that tenth."""

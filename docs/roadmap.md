@@ -77,12 +77,14 @@ completes.
 
 > **Built.** `src/voidai/analyzers/egress.py`, registered, tested, and scored
 > against a seeded synthetic corpus — 4 of 4 planted transfers, one false
-> positive on a backup target only one machine uses. **The CTU-13 half is not
-> done**: the corpus was unreachable from the environment it was written in,
-> so no real figure is claimed anywhere. The analyzer is wired into
-> `voidai bench --real`; running it and writing the numbers up in
-> `docs/benchmarks.md` §7 is what remains. Everything below stands as the
-> record of what was designed and why.
+> positive on a backup target only one machine uses. CTU-13 has been run once
+> and returned a design correction rather than a score: a predicate may only
+> assert what the sensor measured, so `exfiltrates_to` — an *outbound* claim —
+> is unreachable on NetFlow. **No real accuracy figure is claimed**, and the
+> byte and score gates are still uncalibrated against a real estate;
+> re-scoring scenario 3 is what remains. `docs/benchmarks.md` §7 has the
+> account. Everything below stands as the record of what was designed and why,
+> including the trap that turned out to have a second half.
 
 **Start here.** Three predicates, no new parser, and CTU-13 validates it the day
 it is written.
