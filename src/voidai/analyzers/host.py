@@ -233,12 +233,10 @@ class HostConfig:
     #: component is omitted and the two breadths carry the finding (rule 6).
     min_frequency_samples: int = 20
 
-    #: How far up a process tree the ancestry walk climbs, and the minimum
-    #: number of edges before a chain is worth scoring. Each level costs one
-    #: bounded scan (see `_ancestry`), so this is a memory-for-passes trade
-    #: and not an accuracy one.
+    #: How far up a process tree the ancestry walk climbs. Each level costs
+    #: one bounded scan (see `_ancestry`), so this is a memory-for-passes
+    #: trade and not an accuracy one — the chain is reported, not scored.
     max_chain_depth: int = 4
-    min_chain_edges: int = 2
 
     #: Ceiling on emitted findings. Both ceilings are **per predicate**, so
     #: this analyzer's own maximum is twice `max_findings`. A single budget
@@ -302,9 +300,16 @@ class EstateBaseline:
         return None
 
     def summary(self) -> str:
+        """One line an operator can act on.
+
+        The observation window is in it because a shallow estate is the
+        failure the singleton share exists to catch, and a reader who sees
+        "74% seen on one host only" over half an hour can diagnose it without
+        being told.
+        """
         return (
-            f"{self.hosts} hosts, {self.executions} process creations, "
-            f"{self.distinct_images} distinct images, "
+            f"{self.hosts} hosts, {self.executions} process creations over "
+            f"{self.span_seconds / 3600:.1f}h, {self.distinct_images} distinct images, "
             f"{self.singleton_share:.0%} seen on one host only"
         )
 
@@ -692,8 +697,8 @@ class HostAnalyzer(BaseAnalyzer):
             lineage_scores,
             key=lambda item: (str(item[1]["host"]), item[0].child_name, item[0].parent_name),
         )
-        return [self._process_finding(score, row, ctx) for score, row in processes] + [
-            self._lineage_finding(score, row, ctx) for score, row in lineage
+        return [self._process_finding(score, row) for score, row in processes] + [
+            self._lineage_finding(score, row) for score, row in lineage
         ]
 
     # Pass 1: scalar summary per (host, parent, image)
@@ -1063,12 +1068,7 @@ class HostAnalyzer(BaseAnalyzer):
             )
         return artifacts
 
-    def _process_finding(
-        self,
-        score: ProcessScore,
-        row: dict[str, object],
-        ctx: AnalysisContext,
-    ) -> Finding:
+    def _process_finding(self, score: ProcessScore, row: dict[str, object]) -> Finding:
         artifacts = self._artifacts(row, int(row["n"]))
         evidence = [
             Evidence(
@@ -1106,12 +1106,7 @@ class HostAnalyzer(BaseAnalyzer):
             last_seen=datetime.fromtimestamp(score.last_seen, tz=timezone.utc),
         )
 
-    def _lineage_finding(
-        self,
-        score: LineageScore,
-        row: dict[str, object],
-        ctx: AnalysisContext,
-    ) -> Finding:
+    def _lineage_finding(self, score: LineageScore, row: dict[str, object]) -> Finding:
         artifacts = self._artifacts(row, int(row["n"]))
         evidence = [
             Evidence(
