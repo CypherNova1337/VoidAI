@@ -100,8 +100,12 @@ over one capture return different findings and therefore different
 content-addressed IDs. Reproducibility is a promise this project makes on its
 front page: citations in last month's report still resolve. Sort by score *and*
 by a stable key — the subject and object values will do — everywhere a limit is
-applied. Found by printing the findings twice and diffing, which is the cheapest
-test for it.
+applied.
+
+Printing the findings twice and diffing finds it, but weakly: the same input in
+the same order can hide an ordering that depends on the input. Shuffle the row
+order of the input frame and assert the output is identical — that is what
+catches a `group_by` whose result order leaks into a top-N.
 
 **13 · Say why a row is in the queue.** Every incident the operator sees must
 name what put it there. Five predicates no longer corroborate, and a display
