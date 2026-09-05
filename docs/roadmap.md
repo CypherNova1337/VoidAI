@@ -88,6 +88,23 @@ blocks an address, kills a process or edits a rule. Enforced by absence.
 model downloads. The test suite severs sockets and asserts the pipeline still
 completes.
 
+**12 · A top-N over equal scores needs a total order.** Ranking, capping and
+sampling all pick a few items out of many, and ties are not rare — a generated
+domain family produces hundreds of names scoring an identical 1.0. With no
+tiebreaker, `group_by` ordering decides which ones are reported, so two runs
+over one capture return different findings and therefore different
+content-addressed IDs. Reproducibility is a promise this project makes on its
+front page: citations in last month's report still resolve. Sort by score *and*
+by a stable key — the subject and object values will do — everywhere a limit is
+applied. Found by printing the findings twice and diffing, which is the cheapest
+test for it.
+
+**13 · Say why a row is in the queue.** Every incident the operator sees must
+name what put it there. Five predicates no longer corroborate, and a display
+built only from corroborating ones printed a severity, a priority and a blank
+reason for any incident made entirely of the rest. An analyst cannot triage a
+row that will not say why it exists.
+
 ---
 
 ## 1 · Volume and egress — `analyzer-egress`
