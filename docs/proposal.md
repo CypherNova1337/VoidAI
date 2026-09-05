@@ -135,10 +135,14 @@ ground truth, CC-BY.
 | | Scenario 3 (Rbot, 66.8h) | Scenario 6 (Menti, 2.15h) |
 |---|---|---|
 | Flows analysed | 12,689,947 | 1,916,655 |
-| **Infected host, queue rank** | **2 of 214** | **1 of 133** |
-| Findings → incidents | 1328 → 214 | 397 → 133 |
-| Throughput | 224k rec/s | 219k rec/s |
+| **Infected host, queue rank** | **2 of 247** | **1 of 160** |
+| Findings → incidents | 1589 → 247 | 512 → 160 |
+| Throughput | 207k rec/s | 180k rec/s |
 | Peak memory | 2.6 GB | 0.6 GB |
+
+Three network analyzers. The rank held at 2 and 1 when the third was added,
+against larger queues; peak memory did not move, because analyzers run
+sequentially and release.
 
 Ranking is the whole story. Beaconing alone put scenario 6's C2 at rank 358 of
 395. The fix was not a better periodicity measure — the findings outranking it
@@ -167,7 +171,8 @@ OOM-killed at 2,400 MB, *flaky* at exactly 2,500 MB, and completes reliably from
 
 The load-bearing result is the combined envelope: 12.7M flows held to 3 GB and a
 **single** 2.1GHz core complete in 166 seconds and return the infected host at
-**rank 2 of 214 — identical to the unconstrained run**. Constraining the board
+**rank 2 of 214 — identical to the unconstrained run** at the time it was
+measured, with two analyzers. Constraining the board
 changes how long the answer takes, not what the answer is. The whole pipeline
 including Qwen2.5-1.5B peaks at 2,072 MB, and `voidai demo` runs in 512 MB.
 

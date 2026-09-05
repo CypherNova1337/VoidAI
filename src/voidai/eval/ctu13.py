@@ -156,6 +156,61 @@ class RealCaptureResult:
         return len(self.true_positive_pairs) / len(self.flagged_pairs)
 
     @property
+    def beaconing_findings(self) -> list[Finding]:
+        """Beaconing findings only, highest confidence first.
+
+        Several measures on this page are named after the beaconing channel
+        and must be computed from beaconing findings alone, however many
+        analyzers ran. See `c2_beaconing_confidence`.
+        """
+        beacons = [f for f in self.findings if f.predicate is Predicate.BEACONS_TO]
+        return sorted(beacons, key=lambda f: -f.confidence)
+
+    @property
+    def c2_beaconing_confidence(self) -> float | None:
+        """Strongest *beaconing* finding on a labelled botnet pair.
+
+        Scoped to `beacons_to` deliberately. Selected across every predicate
+        instead, this reported a `contacts_rare_destination` finding at 0.983
+        on scenario 3 in place of the C2 beacon at 0.958 — a row labelled "c2
+        confidence" carrying a number about something else, and no longer
+        comparable with the figure the same row published before a third
+        analyzer existed. A measure named after one behaviour is computed from
+        that behaviour.
+
+        The strongest finding of any kind on a labelled pair is worth knowing
+        too, and has its own name: `strongest_labelled_finding`.
+        """
+        return next(
+            (f.confidence for f in self.beaconing_findings if self._pair(f) in self.botnet_pairs),
+            None,
+        )
+
+    @property
+    def c2_beaconing_rank(self) -> int | None:
+        """Where that finding sits among all beaconing findings, 1-based."""
+        confidence = self.c2_beaconing_confidence
+        if confidence is None:
+            return None
+        return [f.confidence for f in self.beaconing_findings].index(confidence) + 1
+
+    @property
+    def strongest_labelled_finding(self) -> Finding | None:
+        """Highest-confidence finding of *any* predicate on a labelled pair.
+
+        Reported under its own name rather than folded into the C2 row, so
+        that a strong finding of another kind is visible without being
+        mistaken for a measurement of the command-and-control channel.
+        """
+        labelled = [f for f in self.findings if self._pair(f) in self.botnet_pairs]
+        return max(labelled, key=lambda f: f.confidence, default=None)
+
+    @staticmethod
+    def _pair(finding: Finding) -> tuple[str, str]:
+        """A finding's endpoints, in the shape the label set is keyed by."""
+        return (finding.subject.value, finding.object.value if finding.object else "")
+
+    @property
     def flagged_infected_hosts(self) -> set[str]:
         return {src for src, _ in self.flagged_pairs} & self.infected_hosts
 

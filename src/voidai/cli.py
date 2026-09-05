@@ -358,9 +358,6 @@ def _bench_real(path: Path, limit: int) -> None:
     result = evaluate(path, scenario, config=BeaconingConfig(max_findings=limit))
 
     detected = result.true_positive_pairs
-    ranked = sorted((f.confidence for f in result.findings), reverse=True)
-    best = max((f.confidence for f in result.findings
-                if (f.subject.value, f.object.value) in result.botnet_pairs), default=None)
 
     table = Table(title="Real capture", title_justify="left", show_header=False)
     table.add_column(style="dim")
@@ -375,8 +372,22 @@ def _bench_real(path: Path, limit: int) -> None:
             else "[red]not detected[/red]"
         ),
     )
-    if best is not None:
-        table.add_row("c2 confidence", f"{best:.3f} (rank {ranked.index(best) + 1} of {len(ranked)})")
+    # Named after the beaconing channel, so computed from beaconing findings
+    # alone — see `RealCaptureResult.c2_beaconing_confidence` for what
+    # selecting across every predicate reported instead.
+    c2 = result.c2_beaconing_confidence
+    if c2 is not None:
+        table.add_row(
+            "c2 confidence",
+            f"{c2:.3f} (beaconing rank {result.c2_beaconing_rank} "
+            f"of {len(result.beaconing_findings)})",
+        )
+    strongest = result.strongest_labelled_finding
+    if strongest is not None and strongest.confidence != c2:
+        table.add_row(
+            "strongest on a labelled pair",
+            f"{strongest.confidence:.3f} · {escape(strongest.predicate.value)}",
+        )
     rank = result.best_infected_rank
     table.add_row(
         "queue position",

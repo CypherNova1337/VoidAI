@@ -59,40 +59,49 @@ Section 3 is a worked example of that going wrong.
 of real botnet traffic on a university network, every flow labelled `Botnet`,
 `Normal`, or `Background`. Licence: CC-BY.
 
+Measured with all three network analyzers running — beaconing, fan-out, and
+volume-and-egress.
+
 | | Scenario 3 | Scenario 6 |
 |---|---|---|
 | Malware | Rbot | Menti |
 | Duration | 66.8h | 2.15h |
 | Flows analysed | 12,689,947 | 1,916,655 |
 | **Infected host detected** | **yes** | **yes** |
-| C2 confidence | **0.958** | 0.749 |
-| C2 rank among findings | 204 / 1277 | 358 / 395 |
-| **Infected host queue rank** | **2 / 214** | **1 / 133** |
-| Findings → incidents | 1328 → 214 | 397 → 133 |
+| C2 beaconing confidence | **0.958** | 0.749 |
+| C2 rank among beaconing findings | 204 / 1277 | 358 / 395 |
+| **Infected host queue rank** | **2 / 247** | **1 / 160** |
+| Findings → incidents | 1589 → 247 | 512 → 160 |
 | Corroborated incidents | 3 | 1 |
 | Beaconing pair precision | 0.0008 | 0.0025 |
-| Throughput | 223,651 rec/s | 219,088 rec/s |
-| Peak RSS | 2,672 MB | 634 MB |
+| Throughput | 206,657 rec/s | 180,280 rec/s |
+| Peak RSS | 2,662 MB | 632 MB |
 
-**The table above was measured with beaconing and fan-out only.** A third
-analyzer — volume and egress, section 7 — now runs on this path as well. It
-has been re-measured with all three, and the cells that were re-run are these:
+**What the third analyzer changed, and what it did not.** Findings rise by
+about 20% on scenario 3 (1328 → 1589) and 29% on scenario 6 (397 → 512), and
+throughput falls by roughly 8% and 18% as a third pass runs. Memory is flat:
+peak RSS is inside 10 MB of the two-analyzer figure on both captures, which is
+rule 2 holding — peak is `max(analyzers)`, not `sum(analyzers)`, because they
+run sequentially and release.
 
-| | Scenario 3 | Scenario 6 |
-|---|---|---|
-| **Infected host queue rank** | **2 / 247** | **1** |
-| Incidents | 247 | not recorded |
-| Corroborated incidents | 3 | 1 |
+The two rows that matter are the two that did not move. **The infected host
+holds rank 2 and rank 1**, against larger queues than before — 247 and 160
+incidents rather than 214 and 133. And **corroborated incidents stay at 3 and
+1**, exactly where two analyzers had them, while a third analyzer emits
+findings across the estate. That is what `non_corroborating` is for, and it is
+emphatically not what the first two versions of the egress analyzer did: they
+took corroboration to 33 and 16 and pushed the scenario 3 true positive to
+rank 5. Section 7 has that story.
 
-The queue rank and the corroboration count both hold. That is the result worth
-noting: a third analyzer emitting findings across the estate left the number
-of corroborated incidents exactly where two analyzers had it — 3 and 1 — which
-is what `non_corroborating` is for and is not what the first two versions of
-the egress analyzer did. Section 7 has that story.
-
-The rows not listed above — findings counts, C2 finding rank, pair precision,
-throughput, peak RSS — were not captured in the re-run and are left as the
-two-analyzer measurement they are. They are not adjusted by reasoning.
+Two rows are scoped rather than re-measured, and are named for it. "C2
+beaconing confidence" and "C2 rank among beaconing findings" are computed from
+`beacons_to` findings alone, so they are unchanged by construction — the
+beaconing analyzer itself is untouched. Selected across every predicate, as
+they briefly were, scenario 3's C2 row reported a `contacts_rare_destination`
+finding at 0.983 instead of the beacon at 0.958: a row keeping its name while
+measuring something else, and losing comparability with every figure it had
+published before. `voidai bench --real` now reports the strongest finding of
+any kind on a labelled pair under its own separate row.
 
 Scenario 3's C2 channel (`147.32.84.165 → 38.229.70.20`) is found at 0.958
 confidence — genuinely strong. Scenario 6's Menti channel
@@ -150,6 +159,11 @@ the true positive.
 | **After — infected host queue rank** | **2 / 214** | **1 / 133** |
 | Findings → incidents | 1328 → 214 | 397 → 133 |
 | Corroborated incidents | 3 | 1 |
+
+This table is the one-analyzer to two-analyzer transition and its numbers are
+that measurement, not the current one — a third analyzer has since been added
+and the table at the top of this section carries the figures with all three.
+The rank and the corroboration count are the same in both.
 
 Adding the second analyzer costs about 25% in wall time (223k rec/s against
 310k for beaconing alone) and nothing in memory.
@@ -450,7 +464,7 @@ detector. There is no real precision figure for this analyzer.
 returned was not an accuracy number — it was two design errors and the
 measurements that fixed them, under "What CTU-13 changed" onward. Both
 captures are now restored with the analyzer running: scenario 3's infected
-host at rank 2 of 247, scenario 6's at rank 1.
+host at rank 2 of 247, scenario 6's at rank 1 of 160.
 
 The analyzer claims three predicates that are one measurement seen at three
 strengths: `exfiltrates_to` (critical/high), `transfers_anomalous_volume`
@@ -694,13 +708,12 @@ still appears in front of the analyst, but no longer multiplies a priority.
 |---|---|---|---|---|
 | **Scenario 3 — infected host rank** | **2 / 214** | 5 / 247 | 5 / 247 | **2 / 247** |
 | Scenario 3 — corroborated incidents | 3 | 33 | 33 | **3** |
-| **Scenario 6 — infected host rank** | **1 / 133** | 1 | 1 | **1** |
-| Scenario 6 — corroborated incidents | 1 | not recorded | 16 | **1** |
+| **Scenario 6 — infected host rank** | **1 / 133** | 1 | 1 | **1 / 160** |
+| Scenario 6 — corroborated incidents | 1 | 16 | 16 | **1** |
 
-Scenario 6's rank is given without a denominator in the last three columns,
-and one of its corroboration counts was not captured, because those runs were
-not recorded in full. The cells are left empty rather than filled in from the
-column beside them.
+Scenario 6's rank is given without a denominator in the two middle columns;
+the incident count was not recorded for those runs and is not filled in from
+the column beside it.
 
 Both captures are restored, with a third analyzer running and its findings
 kept. The scenario 6 bot's incident still carries its
@@ -770,9 +783,11 @@ no signal available to it can distinguish from a private drop box. An asset
 inventory would demote both in one step, and the `AnalysisContext` already
 carries `ip_to_host` for exactly this.
 
-**Memory headroom on the largest capture.** 2,672 MB does fit a 4GB board —
-measured, section 3 — but with roughly 1.1 GB spare rather than a wide margin.
-Windowing pass 1 would lower it further.
+**Memory headroom on the largest capture.** 2,662 MB does fit a 4GB board —
+measured against a hard cgroup ceiling, section 3 — but with roughly 1.1 GB
+spare rather than a wide margin. A third analyzer did not change that, and a
+fourth need not either, but nothing enforces it. Windowing pass 1 would lower
+it further.
 
 ---
 

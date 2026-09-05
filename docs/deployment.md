@@ -111,6 +111,11 @@ answer is:
 | 3,000 MB @ 100% | 165.8 s | 91k rec/s | rank 2 of 214 |
 | 3,696 MB @ 200% | 87.2 s | 173k rec/s | rank 2 of 214 |
 
+These envelope runs were measured with two analyzers, and the denominator has
+since grown to 247 with a third — the unconstrained rank is 2 either way, and
+peak memory moved by under 10 MB, but the runs above have not been repeated
+and are reported as what they are.
+
 ### What this harness does not prove
 
 It runs on x86-64. **It is not an ARM test.** aarch64 has different wheels,

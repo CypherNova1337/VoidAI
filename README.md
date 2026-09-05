@@ -122,17 +122,17 @@ real botnet captures on a university network, with per-flow ground truth.
 | | CTU-13 #3 (Rbot, 66.8h) | CTU-13 #6 (Menti, 2.15h) |
 |---|---|---|
 | Flows | 12,689,947 | 1,916,655 |
-| **Infected host, queue rank** | **2 of 214** | **1 of 133** |
-| Findings → incidents | 1328 → 214 | 397 → 133 |
+| **Infected host, queue rank** | **2 of 247** | **1 of 160** |
+| Findings → incidents | 1589 → 247 | 512 → 160 |
 | Corroborated incidents | 3 | 1 |
-| Throughput | 224k rec/s | 219k rec/s |
+| Throughput | 207k rec/s | 180k rec/s |
 | Peak RSS | 2.6 GB | 0.6 GB |
 
-Measured with beaconing and fan-out. Re-run with the volume-and-egress
-analyzer added, the infected host holds rank 2 (of 247) on scenario 3 and rank
-1 on scenario 6, with corroborated incidents unchanged at 3 and 1. The other
-rows were not re-captured and are left as the two-analyzer measurement they
-are.
+Three analyzers, and the two rows that matter are the two that did not move
+when the third was added: the infected host holds rank 2 and rank 1 against
+larger queues, and corroborated incidents stay at 3 and 1. Peak memory is flat
+within 10 MB — analyzers run sequentially and release, so the cost of adding
+one is `max`, not `sum`.
 
 Reproduce with `voidai bench` and `voidai bench --real <capture>`.
 
@@ -225,8 +225,8 @@ mechanism a board with no swap enforces. It corrected this README: the 66-hour,
 12.7M-flow capture was documented as needing more than a 4GB board, and in fact
 is OOM-killed at 2,400 MB, flaky at exactly 2,500 MB, and completes reliably
 from 2,600 MB. Held to 3 GB and a **single** core it still finishes in 166 s
-and still returns the infected host at **rank 2 of 214 — the unconstrained
-result**. `voidai demo` runs in 512 MB. This is not an ARM test and is not
+and still returns the infected host at **rank 2 — the unconstrained result**
+(measured with two analyzers; the queue is 247 deep with three). `voidai demo` runs in 512 MB. This is not an ARM test and is not
 offered as one; see [`docs/deployment.md`](docs/deployment.md).
 
 **Small by construction.** The target model tier is 1.7B–4B parameters at
