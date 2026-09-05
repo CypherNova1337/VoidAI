@@ -21,6 +21,7 @@ from voidai.analyzers import (
     AnalysisContext,
     BeaconingAnalyzer,
     EgressAnalyzer,
+    HostAnalyzer,
     TlsDgaAnalyzer,
 )
 from voidai.eval.synth import (
@@ -30,12 +31,16 @@ from voidai.eval.synth import (
     DgaCorpusGenerator,
     EgressCorpus,
     EgressCorpusGenerator,
+    HostCorpus,
+    HostCorpusGenerator,
     TlsCorpus,
     TlsCorpusGenerator,
+    write_sysmon_jsonl,
     write_zeek_ssl_log,
 )
+from voidai.ingest.sysmon import read_sysmon
 from voidai.ingest.zeek import read_conn_log, read_ssl_log
-from voidai.lexicon import Finding
+from voidai.lexicon import Finding, Predicate
 from voidai.telemetry import EnergyMeter, RunReceipt
 
 
@@ -245,6 +250,99 @@ class TlsBenchmarkResult:
     receipt: RunReceipt
     findings: list[Finding]
     corpus: TlsCorpus
+
+
+@dataclass
+class HostBenchmarkResult:
+    detection: DetectionScore
+    receipt: RunReceipt
+    findings: list[Finding]
+    corpus: HostCorpus
+
+
+def score_host(findings: list[Finding], corpus: HostCorpus) -> DetectionScore:
+    """Match findings to planted executions, per predicate.
+
+    Scored on (host, image) for both predicates, because that is what the
+    finding names — a lineage finding's object is the child process, and the
+    parent is inside the evidence rather than in the proposition.
+
+    A plant is scored **only against the predicate it was planted for**. Three
+    of the plants are novel binaries and three are ordinary binaries in an
+    impossible relationship, and the two halves cannot see each other's by
+    design: an image the estate has never run cannot be found by a measure of
+    how unusual its parentage is, since it has no other parentage to compare.
+    Counting each plant against both would report a 50% miss rate for a
+    detector behaving exactly as specified — the mistake section 9 avoided by
+    counting a dictionary generator as a miss and saying so, rather than
+    dropping it from the denominator.
+    """
+    score = DetectionScore()
+    truth: dict[tuple[str, str, Predicate], str] = {}
+    for implant in corpus.implants:
+        predicate = (
+            Predicate.EXECUTES_RARE_PROCESS
+            if implant.predicate == "executes_rare_process"
+            else Predicate.EXHIBITS_ANOMALOUS_LINEAGE
+        )
+        truth[(implant.host, implant.image_name, predicate)] = implant.label
+
+    matched: set[tuple[str, str, Predicate]] = set()
+    for finding in findings:
+        assert finding.object is not None
+        key = (finding.subject.value, finding.object.value, finding.predicate)
+        if key in truth:
+            score.true_positives += 1
+            matched.add(key)
+        else:
+            decoy = corpus.decoys.get((key[0], key[1]), "unlabelled")
+            score.false_positives += 1
+            score.false_positive_pairs.append(
+                f"{key[0]} {finding.predicate.value} {key[1]} ({decoy})"
+            )
+
+    for key, label in truth.items():
+        if key not in matched:
+            score.false_negatives += 1
+            score.missed_labels.append(label)
+
+    return score
+
+
+def run_host_benchmark(
+    seed: int = 1337,
+    hours: float = 8.0,
+    workdir: Path | None = None,
+) -> HostBenchmarkResult:
+    """Score the host analyzer, through a real Sysmon JSON-lines file on disk.
+
+    Through the file rather than the frame, for the reason `run_benchmark`
+    gives. Here it earns its keep twice over: the parser prefers the sensor's
+    `UtcTime` over the shipper's `@timestamp`, and it reads Sysmon's own
+    PascalCase field names rather than the normalised schema's — neither of
+    which a benchmark handed a ready-made frame would exercise at all.
+    """
+    corpus = HostCorpusGenerator(seed=seed).generate(hours=hours)
+    receipt = RunReceipt()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(workdir) if workdir else Path(tmp)
+        log_path = write_sysmon_jsonl(directory / "sysmon.jsonl", corpus.events)
+
+        with EnergyMeter() as meter:
+            events = read_sysmon(log_path)
+            findings = HostAnalyzer().analyze(AnalysisContext(processes=events))
+
+    receipt.records_ingested = events.height
+    receipt.findings_emitted = len(findings)
+    receipt.finalize(meter.reading)
+
+    return HostBenchmarkResult(
+        detection=score_host(findings, corpus),
+        receipt=receipt,
+        findings=findings,
+        corpus=corpus,
+    )
 
 
 def score_dga(findings: list[Finding], corpus: DgaCorpus) -> DetectionScore:

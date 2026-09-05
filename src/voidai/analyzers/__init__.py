@@ -21,6 +21,17 @@ from voidai.analyzers.egress import (
     score_transfer,
 )
 from voidai.analyzers.fanout import FanoutAnalyzer, FanoutConfig, FanoutScore, score_fanout
+from voidai.analyzers.host import (
+    EstateBaseline,
+    HostAnalyzer,
+    HostConfig,
+    LineageScore,
+    ProcessScore,
+    estate_baseline,
+    host_summary,
+    score_lineage,
+    score_process,
+)
 from voidai.analyzers.intel import (
     IntelConfig,
     IntelScore,
@@ -46,6 +57,7 @@ DEFAULT_ANALYZERS: tuple[type[BaseAnalyzer], ...] = (
     AlertTriageAnalyzer,
     ThreatIntelAnalyzer,
     TlsDgaAnalyzer,
+    HostAnalyzer,
 )
 
 __all__ = [
@@ -66,23 +78,32 @@ __all__ = [
     "EgressAnalyzer",
     "EgressConfig",
     "EgressScore",
+    "EstateBaseline",
     "FanoutAnalyzer",
     "FanoutConfig",
     "FanoutScore",
+    "HostAnalyzer",
+    "HostConfig",
     "IntelConfig",
     "IntelScore",
+    "LineageScore",
+    "ProcessScore",
     "ThreatIntelAnalyzer",
     "TlsDgaAnalyzer",
     "TlsDgaConfig",
     "TlsScore",
+    "estate_baseline",
+    "host_summary",
     "improbability",
     "mean_surprise",
     "score_alert_cluster",
     "score_domain",
     "score_fanout",
     "score_fingerprint",
+    "score_lineage",
     "score_match",
     "score_pair",
+    "score_process",
     "score_transfer",
     "score_zone",
 ]

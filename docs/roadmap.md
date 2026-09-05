@@ -1,17 +1,17 @@
 # Roadmap — filling in the Lexicon
 
-Eighteen predicates are declared. Twelve have something that emits them. The
+Eighteen predicates are declared. Fourteen have something that emits them. The
 vocabulary is ahead of the code on purpose: the grammar was written for the
-system VoidAI is meant to become, and the remaining six predicates are the
+system VoidAI is meant to become, and the remaining four predicates are the
 work list.
 
 ```
-18 predicates declared · 7 analyzers built · 6 predicates unclaimed
+18 predicates declared · 8 analyzers built · 4 predicates unclaimed
 ```
 
-Twelve rather than eleven, and no eighth analyzer: `precedes` is emitted by
-the correlator, which is why cluster 4 below is the one entry here that adds
-no file to `analyzers/`.
+Fourteen rather than thirteen, and eight analyzers rather than nine:
+`precedes` is emitted by the correlator, which is why cluster 4 below is the
+one entry here that adds no file to `analyzers/`.
 
 This document is the plan for the rest. Each section is a self-contained
 unit of work sized to one branch, and they are ordered by ratio of value
@@ -557,6 +557,47 @@ with itself and cannot fail.
 
 ## 5 · Host and endpoint — `analyzer-host`
 
+> **Half done.** `src/voidai/analyzers/host.py` and
+> `src/voidai/ingest/sysmon.py`, registered, and covered by 75 tests.
+> `executes_rare_process` and `exhibits_anomalous_lineage` are built, as the
+> trap below instructs: they share a parser and a baseline and were taken as
+> one unit.
+>
+> **`establishes_persistence` and `authentication_anomaly` are deliberately
+> not built.** The trap says this cluster is four analyzers wearing a
+> trenchcoat and that taking all four is how it goes wrong, and that is
+> correct for a reason worth stating precisely: the two built here share
+> *both* a parser and a baseline, and neither of the other two shares either.
+> `establishes_persistence` reads Sysmon events 11, 12 and 13 and registry
+> and scheduled-task creation — a different event set — and is event-driven
+> rather than statistical, so it has no estate baseline at all and is closer
+> in shape to `alerts.py`. `authentication_anomaly` reads Windows Security
+> 4624/4625, takes a `user` as subject rather than a `host`, and its baseline
+> is per-account rather than per-image. Three predicates in one branch would
+> have shared one gate between three incompatible notions of "normal".
+> Both remain declared in the Lexicon and unclaimed. **Take one. Do not take
+> two.**
+>
+> **Validation is synthetic sensitivity and a real refusal**, which is a
+> shape no previous cluster produced. A real, openly-licensed, correctly
+> formatted corpus of Windows attack telemetry is committed at
+> `tests/data/real.sysmon.jsonl.gz` — OTRF Security-Datasets, MIT, licence
+> verified by fetching it — and it contains a genuine true positive. The
+> analyzer **declines to score it**, because four hosts is not an estate and
+> a rarity measure over that capture ranks `lsass.exe` identically with the
+> APT29 day-1 payload. Synthetic: 6 of 6 plants, one planted false positive
+> that stays. CTU-13 is a no-op by construction and asserted as one.
+>
+> Two things went differently from the plan and both are in
+> `docs/benchmarks.md` §11. **Command-line entropy was measured and removed**
+> — for a different reason than §9's, and a worse one: the encodings
+> attackers use are *less* entropic than ordinary command lines, and the
+> corpus's largest base64 payload sits at the 38th percentile. **The lineage
+> measurement had to be rewritten**, because raw edge rarity made
+> `executes_rare_process` structurally unreachable: a novel binary always
+> arrives on a novel edge. Conditional breadth on both ends fixes it. Read
+> §11 before the section below.
+
 The highest-value cluster and the largest lift. Four predicates, a new telemetry
 family, and the biggest payoff for corroboration ranking — a host that beacons
 *and* spawns an anomalous child process is precisely what the noisy-OR was built
@@ -598,7 +639,60 @@ EVTX-ATTACK-SAMPLES collections carry real attack telemetry. Verify licensing
 before vendoring anything, and attribute it the way `tests/data/real.passivedns`
 already is.
 
----
+### What it cost, for whoever takes the next one
+
+**A host count is not an estate check.** The trap asks for a minimum host
+count and that is necessary and not sufficient: thirty machines observed for
+twenty seconds each pass it, and every image on them is still a singleton.
+The gate that does the work is the **share of images seen on exactly one
+host**, which asks whether the baseline has converged rather than how many
+machines are in it — and it was set from the real corpus (74%) rather than
+chosen. It is the first gate in this project set by measurement, and the
+pattern generalises: cluster 6's endpoint baselines will need the same
+question asked.
+
+**"Rare" and "anomalously parented" are the same observation unless you make
+them different.** `hosts(edge) ≤ hosts(child)` always, so a novel binary
+guarantees a novel edge and the lineage half will swallow the rarity half
+whole. Two things fix it and both are needed: measure the edge *conditionally*
+on how widespread each end is, and give the analyzer a subsumption rule so
+one process creation cannot become two behaviours of one host. The second has
+to live in the analyzer — the correlator sees two findings about a host and
+cannot know they describe one event.
+
+**A conditional frequency computed over the sample you are scoring is a trap
+in both directions.** `P(child | parent)` is 1.0 for a parent observed
+spawning one process, which annihilated the clearest true positive in the
+corpus; the fix is a minimum sample count and an omitted component below it,
+not a floor value. This is rule 6's first level, and it is the third cluster
+in a row to meet it in a new disguise.
+
+**Two of fifteen guards passed for the wrong reason, and rule 8 found both.**
+A cycle test that asserted only termination — which a depth bound already
+guarantees — and a null-join test containing no nulls. Both looked careful.
+Neither guarded anything. Budget for the exercise; it is the second time in
+this repository it has paid.
+
+**Run rule 8's mutants with `-B`.** A size-preserving mutation leaves a `.pyc`
+whose cache key does not change, so the reverted source is shadowed by the
+mutant's bytecode on the *next* run and a passing test fails for no visible
+reason.
+
+**Host telemetry and network telemetry do not join, and nothing in this
+cluster could fix it.** Sysmon records a computer name and no address, so one
+compromised machine becomes two incidents and the corroboration payoff this
+cluster was sold on is only half collected. `AnalysisContext.ip_to_host` is
+shaped for the inventory that would close it and nothing populates it — the
+same gap the queue already has for demoting a gateway. It is one small parser
+and it is now the highest-value item in `benchmarks.md` §12.
+
+**A predicate you wish existed is a Lexicon change, not a workaround.** With
+prevalence unavailable there is no weaker verb to fall back on — cluster 1
+had `transfers_anomalous_volume` waiting and this one has nothing. The
+temptation is to emit `executes_rare_process` scored on path and command line
+alone, which is exactly cluster 1's mistake: keeping the claim after losing
+the measurement. `executes_process_from_unusual_path` is noted as a candidate
+and deliberately not minted.
 
 ## 6 · Web — `analyzer-web`
 
@@ -647,7 +741,7 @@ vendoring.
 | 2 | Threat intel | Low | **Done** — and rule 6 had to be re-derived without weights; see the section |
 | 3 | TLS and DGA | Medium | **Done** — and entropy turned out not to work at this length; see the section |
 | 4 | Temporal ordering | Low | **Done** — and the trap was half the trap; see the section |
-| 5 | Host and endpoint | High | Biggest corroboration payoff, biggest lift — split it up |
+| 5 | Host and endpoint | High | **Half done** — the two that share a baseline; the other two are still open, see the section |
 | 6 | Web | Medium | Least novel; do last, or not at all |
 
 ---

@@ -5,11 +5,13 @@ from voidai.ingest.schema import (
     ALERT_SCHEMA,
     CONNECTION_SCHEMA,
     DNS_SCHEMA,
+    PROCESS_SCHEMA,
     SSL_SCHEMA,
     conform,
     empty,
 )
 from voidai.ingest.suricata import load_alerts, read_eve, scan_eve
+from voidai.ingest.sysmon import load_processes, read_sysmon
 from voidai.ingest.zeek import (
     discover,
     load_connections,
@@ -24,6 +26,7 @@ __all__ = [
     "ALERT_SCHEMA",
     "CONNECTION_SCHEMA",
     "DNS_SCHEMA",
+    "PROCESS_SCHEMA",
     "SSL_SCHEMA",
     "conform",
     "discover",
@@ -32,11 +35,13 @@ __all__ = [
     "load_connections",
     "load_dns",
     "load_passivedns",
+    "load_processes",
     "load_ssl",
     "read_conn_log",
     "read_dns_log",
     "read_eve",
     "read_passivedns",
     "read_ssl_log",
+    "read_sysmon",
     "scan_eve",
 ]

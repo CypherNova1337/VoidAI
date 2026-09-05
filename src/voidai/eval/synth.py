@@ -23,13 +23,22 @@ alongside it.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import polars as pl
 
-from voidai.ingest.schema import CONNECTION_SCHEMA, DNS_SCHEMA, SSL_SCHEMA, conform
+from voidai.ingest.schema import (
+    CONNECTION_SCHEMA,
+    DNS_SCHEMA,
+    PROCESS_SCHEMA,
+    SSL_SCHEMA,
+    conform,
+)
 
 _ZEEK_CONN_FIELDS = [
     "ts",
@@ -762,6 +771,15 @@ _ABBREVIATED_LABELS = (
 
 _PATIENT_ZERO = "10.0.1.14"
 
+#: The same machine, named. Host telemetry has no IP to key on — Sysmon event
+#: ID 1 records a computer name and nothing else — so the demo's compromised
+#: host appears in the queue twice: once as `ip:10.0.1.14` for everything the
+#: network sensors saw, and once as `host:FINANCE-WS04` for what the endpoint
+#: agent saw. Joining them needs an asset inventory mapping addresses to
+#: hostnames, which `AnalysisContext.ip_to_host` is already shaped for and
+#: nothing yet populates. See `docs/benchmarks.md` section 11.
+_PATIENT_ZERO_HOST = "FINANCE-WS04"
+
 
 @dataclass(frozen=True)
 class DgaFamily:
@@ -1087,6 +1105,321 @@ _ZEEK_SSL_FIELDS = [
 ]
 
 
+
+@dataclass(frozen=True)
+class PlantedExecution:
+    """One execution the generator planted, and which predicate should see it."""
+
+    host: str
+    parent: str
+    image: str
+    label: str
+    #: The predicate this execution is planted for. A lineage plant whose
+    #: image is ordinary (`cmd.exe` under `winword.exe`) is deliberately
+    #: invisible to the rarity half, and scoring it as a rarity miss would
+    #: measure the corpus rather than the detector.
+    predicate: str
+
+    @property
+    def image_name(self) -> str:
+        return self.image.rsplit("\\", 1)[-1].lower()
+
+    @property
+    def parent_name(self) -> str:
+        return self.parent.rsplit("\\", 1)[-1].lower()
+
+    @property
+    def process_key(self) -> tuple[str, str]:
+        return (self.host, self.image_name)
+
+    @property
+    def lineage_key(self) -> tuple[str, str, str]:
+        return (self.host, self.parent_name, self.image_name)
+
+
+@dataclass
+class HostCorpus:
+    """Generated process-creation telemetry plus its ground truth."""
+
+    events: pl.DataFrame
+    implants: list[PlantedExecution]
+    decoys: dict[tuple[str, str], str] = field(default_factory=dict)
+
+    @property
+    def process_keys(self) -> set[tuple[str, str]]:
+        return {p.process_key for p in self.implants if p.predicate == "executes_rare_process"}
+
+    @property
+    def lineage_keys(self) -> set[tuple[str, str, str]]:
+        return {p.lineage_key for p in self.implants if p.predicate == "exhibits_anomalous_lineage"}
+
+
+class HostCorpusGenerator:
+    """Builds a labelled Windows estate from a seed.
+
+    The estate has to be an estate. Both host predicates are prevalence
+    claims, and a generator that produced one machine would produce a corpus
+    on which the analyzer correctly refuses to speak — which is what the real
+    corpus in `tests/data` already demonstrates and does not need a second
+    demonstration of. So forty workstations run the same twenty binaries, and
+    the interesting rows are the ones that do not.
+
+    The decoys are the ways a prevalence measure goes wrong on host telemetry,
+    and they are not the ones that catch a network detector:
+
+      * **a toolchain only one machine runs.** A developer's `msbuild.exe` and
+        `node.exe` are on exactly one host out of forty and score a perfect
+        rarity — but they live under `Program Files` and run hundreds of
+        times, which is what `path_anomaly` and `execution_prevalence` are for.
+      * **an administrator's tool on two machines.** Rare, run twice, and in
+        `System32` where the operating system's own binaries live.
+      * **a legitimate installer in a user's Downloads folder, run once.**
+        Rare image, writable path, single execution. This one is *expected to
+        fire*: it is indistinguishable from a dropped payload by anything this
+        analyzer measures, and pretending otherwise by tuning it away would be
+        the section 9 mistake. It is counted as a false positive and reported.
+      * **a rare but ordinary lineage.** `explorer.exe` spawning an installer
+        on one host is an edge seen nowhere else in the estate.
+
+    The implants are three shapes rather than three instances of one:
+
+      * a dropped binary in a user's temp directory — rare *and* anomalously
+        parented, which is what the subsumption rule in `analyzers/host.py`
+        exists to handle;
+      * `winword.exe -> cmd.exe -> powershell.exe`, where every image is
+        commonplace and only the *relationship* is wrong. Invisible to the
+        rarity half by construction;
+      * a service binary masquerading under `ProgramData`, parented by
+        `svchost.exe`.
+    """
+
+    #: The estate's ordinary software. Each entry is (parent, image), and
+    #: every host runs all of them, which is what makes prevalence mean
+    #: something. Paths are the real ones because `path_anomaly` reads them.
+    BASELINE: tuple[tuple[str, str], ...] = (
+        ("C:\\Windows\\System32\\wininit.exe", "C:\\Windows\\System32\\services.exe"),
+        ("C:\\Windows\\System32\\services.exe", "C:\\Windows\\System32\\svchost.exe"),
+        ("C:\\Windows\\System32\\services.exe", "C:\\Windows\\System32\\spoolsv.exe"),
+        ("C:\\Windows\\System32\\svchost.exe", "C:\\Windows\\System32\\taskhostw.exe"),
+        ("C:\\Windows\\System32\\svchost.exe", "C:\\Windows\\System32\\wbem\\WmiPrvSE.exe"),
+        ("C:\\Windows\\System32\\svchost.exe", "C:\\Windows\\System32\\RuntimeBroker.exe"),
+        ("C:\\Windows\\System32\\svchost.exe", "C:\\Windows\\System32\\dllhost.exe"),
+        ("C:\\Windows\\System32\\winlogon.exe", "C:\\Windows\\explorer.exe"),
+        ("C:\\Windows\\explorer.exe", "C:\\Program Files\\Google\\Chrome\\chrome.exe"),
+        ("C:\\Windows\\explorer.exe", "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE"),
+        ("C:\\Windows\\explorer.exe", "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE"),
+        ("C:\\Windows\\explorer.exe", "C:\\Program Files\\Microsoft\\Teams\\Teams.exe"),
+        ("C:\\Windows\\explorer.exe", "C:\\Windows\\System32\\notepad.exe"),
+        ("C:\\Windows\\explorer.exe", "C:\\Windows\\System32\\cmd.exe"),
+        ("C:\\Windows\\explorer.exe", "C:\\Windows\\System32\\mmc.exe"),
+        ("C:\\Windows\\System32\\cmd.exe", "C:\\Windows\\System32\\conhost.exe"),
+        ("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+         "C:\\Windows\\System32\\conhost.exe"),
+        ("C:\\Windows\\explorer.exe",
+         "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+        ("C:\\Windows\\System32\\svchost.exe", "C:\\Windows\\System32\\SearchIndexer.exe"),
+        ("C:\\Windows\\System32\\svchost.exe", "C:\\Windows\\System32\\sihost.exe"),
+    )
+
+    COMMANDS: ClassVar[dict[str, str]] = {
+        "svchost.exe": "C:\\Windows\\system32\\svchost.exe -k netsvcs -p",
+        "conhost.exe": "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1",
+        "chrome.exe": '"C:\\Program Files\\Google\\Chrome\\chrome.exe" --type=renderer',
+        "cmd.exe": '"C:\\Windows\\system32\\cmd.exe" /c dir',
+        "powershell.exe": '"powershell.exe" -NoProfile -File C:\\ops\\inventory.ps1',
+    }
+
+    def __init__(self, seed: int = 1337) -> None:
+        self.rng = np.random.default_rng(seed)
+        self._sequence = 0
+
+    def _guid(self) -> str:
+        self._sequence += 1
+        return f"{{aaaaaaaa-0000-0000-0000-{self._sequence:012d}}}"
+
+    def _event(
+        self,
+        host: str,
+        parent: str,
+        image: str,
+        ts: float,
+        parent_guid: str | None = None,
+        command_line: str | None = None,
+        user: str = "CONTOSO\\jsmith",
+    ) -> dict[str, object]:
+        name = image.rsplit("\\", 1)[-1].lower()
+        return {
+            "ts": ts,
+            "host": host,
+            "user": user,
+            "image": image,
+            "command_line": command_line or self.COMMANDS.get(name, f'"{image}"'),
+            "current_directory": "C:\\Windows\\system32\\",
+            "integrity_level": "Medium",
+            "process_guid": self._guid(),
+            "process_id": int(self.rng.integers(400, 30000)),
+            "parent_image": parent,
+            "parent_command_line": f'"{parent}"' if parent else None,
+            "parent_guid": parent_guid,
+            "parent_process_id": int(self.rng.integers(400, 30000)),
+            "sha256": f"{self.rng.integers(0, 2**63):064x}"[:64],
+            "source_file": "<synthetic>",
+            "source_line": 0,
+        }
+
+    def generate(
+        self,
+        hosts: int = 40,
+        hours: float = 8.0,
+        start_epoch: float = 1_750_000_000.0,
+    ) -> HostCorpus:
+        rows: list[dict[str, object]] = []
+        decoys: dict[tuple[str, str], str] = {}
+        span = hours * 3600.0
+
+        # The estate: every workstation runs every baseline binary, which is
+        # what stops prevalence from measuring the corpus's size.
+        guids: dict[tuple[str, str], str] = {}
+        for index in range(hosts):
+            host = f"WS{index + 1:03d}.contoso.local"
+            for parent, image in self.BASELINE:
+                for _ in range(int(self.rng.integers(2, 7))):
+                    event = self._event(
+                        host, parent, image, start_epoch + float(self.rng.random()) * span,
+                        parent_guid=guids.get((host, parent.rsplit("\\", 1)[-1].lower())),
+                    )
+                    guids.setdefault((host, image.rsplit("\\", 1)[-1].lower()),
+                                     str(event["process_guid"]))
+                    rows.append(event)
+
+        # Decoy: a developer's toolchain, on one host and only one host.
+        for image in (
+            "C:\\Program Files\\Microsoft Visual Studio\\MSBuild\\Current\\Bin\\MSBuild.exe",
+            "C:\\Program Files\\nodejs\\node.exe",
+        ):
+            for _ in range(120):
+                rows.append(
+                    self._event(
+                        "WS007.contoso.local", "C:\\Windows\\System32\\cmd.exe", image,
+                        start_epoch + float(self.rng.random()) * span,
+                        parent_guid=guids.get(("WS007.contoso.local", "cmd.exe")),
+                    )
+                )
+            decoys[("WS007.contoso.local", image.rsplit("\\", 1)[-1].lower())] = (
+                "developer toolchain, one host, hundreds of executions"
+            )
+
+        # Decoy: an administrator's tool, twice, on two machines, in System32.
+        for host in ("WS011.contoso.local", "WS012.contoso.local"):
+            for _ in range(2):
+                rows.append(
+                    self._event(
+                        host, "C:\\Windows\\System32\\cmd.exe",
+                        "C:\\Windows\\System32\\PsExec64.exe",
+                        start_epoch + float(self.rng.random()) * span,
+                        parent_guid=guids.get((host, "cmd.exe")),
+                    )
+                )
+            decoys[(host, "psexec64.exe")] = "administrator tool, two hosts, System32"
+
+        # Decoy: a legitimate installer in a user's Downloads folder, run once.
+        # Expected to fire. See the class docstring.
+        rows.append(
+            self._event(
+                "WS019.contoso.local", "C:\\Windows\\explorer.exe",
+                "C:\\Users\\dpatel\\Downloads\\7z2301-x64.exe",
+                start_epoch + 0.42 * span,
+                parent_guid=guids.get(("WS019.contoso.local", "explorer.exe")),
+            )
+        )
+        decoys[("WS019.contoso.local", "7z2301-x64.exe")] = (
+            "legitimate installer, user Downloads, single execution — expected false positive"
+        )
+
+        implants = [
+            # Rare-process plants: a binary the estate has never run. The
+            # parent edge is novel too, and deliberately so — that is the
+            # overlap `_subsume` resolves, and a corpus with no instance of it
+            # would not test the resolution.
+            PlantedExecution(
+                host="WS023.contoso.local",
+                parent="C:\\Windows\\explorer.exe",
+                image="C:\\Users\\mrivera\\AppData\\Local\\Temp\\svchost-update.exe",
+                label="dropped binary in a user temp directory",
+                predicate="executes_rare_process",
+            ),
+            PlantedExecution(
+                host="WS038.contoso.local",
+                parent="C:\\Windows\\System32\\svchost.exe",
+                image="C:\\ProgramData\\svcnet\\netsvc.exe",
+                label="service binary masquerading under ProgramData",
+                predicate="executes_rare_process",
+            ),
+            PlantedExecution(
+                host="WS027.contoso.local",
+                parent="C:\\Windows\\System32\\cmd.exe",
+                image="C:\\Users\\Public\\rclone.exe",
+                label="staging tool in a world-writable directory",
+                predicate="executes_rare_process",
+            ),
+            # Lineage plants: every image is commonplace and runs on every
+            # host in the estate. Invisible to the rarity half by
+            # construction, which is the point — if these were also rare the
+            # corpus would not show that the two predicates measure different
+            # things.
+            PlantedExecution(
+                host="WS031.contoso.local",
+                parent="C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+                image="C:\\Windows\\System32\\cmd.exe",
+                label="office application spawning a shell",
+                predicate="exhibits_anomalous_lineage",
+            ),
+            PlantedExecution(
+                host="WS033.contoso.local",
+                parent="C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
+                image="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                label="mail client spawning a shell",
+                predicate="exhibits_anomalous_lineage",
+            ),
+        ]
+        for implant in implants:
+            parent_guid = guids.get((implant.host, implant.parent_name))
+            event = self._event(
+                implant.host, implant.parent, implant.image,
+                start_epoch + 0.63 * span, parent_guid=parent_guid,
+                command_line=f'"{implant.image}"',
+            )
+            rows.append(event)
+            # The macro chain continues: the shell then launches PowerShell,
+            # so the ancestry an analyst reads is the whole chain rather than
+            # one edge. Labelled too — it is a second execution, not a second
+            # view of the first.
+            if implant.image_name == "cmd.exe":
+                child = self._event(
+                    implant.host, implant.image,
+                    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                    start_epoch + 0.63 * span + 2.0,
+                    parent_guid=str(event["process_guid"]),
+                    command_line='"powershell.exe" -nop -w hidden -enc SQBFAFgAIA==',
+                )
+                rows.append(child)
+                implants.append(
+                    PlantedExecution(
+                        host=implant.host,
+                        parent=implant.image,
+                        image="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                        label="shell spawned by a macro then launching PowerShell",
+                        predicate="exhibits_anomalous_lineage",
+                    )
+                )
+
+        frame = conform(pl.DataFrame(rows), PROCESS_SCHEMA).sort("ts")
+        frame = frame.with_columns(
+            pl.int_range(1, frame.height + 1, dtype=pl.Int64).alias("source_line")
+        )
+        return HostCorpus(events=frame, implants=implants, decoys=decoys)
+
+
 def write_zeek_ssl_log(
     sessions: pl.DataFrame,
     path: str | Path,
@@ -1141,6 +1474,44 @@ def write_zeek_ssl_log(
         for r in sessions.sort("ts").iter_rows(named=True)
     ]
     path.write_text("\n".join(header + rows) + "\n")
+    return path
+
+
+def write_sysmon_jsonl(path: str | Path, events: pl.DataFrame) -> Path:
+    """Write process records as Sysmon JSON lines, the way a collector would.
+
+    Field names are Sysmon's own rather than the normalised schema's, so the
+    demo exercises `ingest/sysmon.py` end to end instead of handing the
+    analyzer a frame the parser never saw. `UtcTime` is written and
+    `@timestamp` deliberately is not: the parser prefers the sensor's clock,
+    and a corpus that only carried the shipper's would let that preference
+    rot untested.
+    """
+    path = Path(path)
+    lines: list[str] = []
+    for row in events.iter_rows(named=True):
+        moment = datetime.fromtimestamp(float(row["ts"]), tz=timezone.utc)
+        record = {
+            "EventID": 1,
+            "SourceName": "Microsoft-Windows-Sysmon",
+            "Channel": "Microsoft-Windows-Sysmon/Operational",
+            "UtcTime": moment.strftime("%Y-%m-%d %H:%M:%S.") + f"{moment.microsecond // 1000:03d}",
+            "Hostname": row["host"],
+            "User": row["user"],
+            "ProcessGuid": row["process_guid"],
+            "ProcessId": row["process_id"],
+            "Image": row["image"],
+            "CommandLine": row["command_line"],
+            "CurrentDirectory": row["current_directory"],
+            "IntegrityLevel": row["integrity_level"],
+            "Hashes": f"SHA1=0000000000000000000000000000000000000000,SHA256={row['sha256']}",
+            "ParentProcessGuid": row["parent_guid"],
+            "ParentProcessId": row["parent_process_id"],
+            "ParentImage": row["parent_image"],
+            "ParentCommandLine": row["parent_command_line"],
+        }
+        lines.append(json.dumps({k: v for k, v in record.items() if v is not None}))
+    path.write_text("\n".join(lines) + "\n")
     return path
 
 
@@ -1346,6 +1717,40 @@ def build_demo_capture(directory: str | Path, seed: int = 1337) -> Path:
         .alias("src_ip")
     )
     write_zeek_ssl_log(sessions, directory / "ssl.log")
+
+    # Host telemetry: the same machine, seen from the endpoint. Patient zero
+    # runs a binary the estate does not, and an Office application on it
+    # spawns a shell — one rare execution and one anomalous lineage, which is
+    # the conjunction this cluster was built for.
+    #
+    # The estate is forty workstations because it has to be. Both host
+    # predicates are prevalence claims and the analyzer refuses to make one
+    # over a handful of machines, so a demo with three would demonstrate the
+    # gate rather than the detector — and `tests/data/real.sysmon.jsonl.gz`
+    # already demonstrates the gate, on real telemetry.
+    host_corpus = HostCorpusGenerator(seed=seed).generate(hours=6.0, start_epoch=start)
+    carried = {"WS023.contoso.local", "WS031.contoso.local"}
+    # The generator plants five executions across five machines. The demo
+    # keeps two and drops the rest: the others would read as further infected
+    # hosts and blunt the point, which is that *one* machine doing several
+    # unrelated things outranks a field each doing one. Same reasoning as the
+    # generation family above, and the decoys all stay.
+    unwanted = pl.lit(False)
+    for implant in host_corpus.implants:
+        if implant.host in carried:
+            continue
+        unwanted = unwanted | (
+            (pl.col("host") == implant.host)
+            & (pl.col("image") == implant.image)
+            & (pl.col("parent_image") == implant.parent)
+        )
+    events = host_corpus.events.filter(~unwanted).with_columns(
+        pl.when(pl.col("host").is_in(list(carried)))
+        .then(pl.lit(_PATIENT_ZERO_HOST))
+        .otherwise(pl.col("host"))
+        .alias("host")
+    )
+    write_sysmon_jsonl(directory / "sysmon.jsonl", events)
 
     # Alerts: estate-wide noise plus two rare severe rules
     alerts: list[dict[str, object]] = []

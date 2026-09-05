@@ -114,6 +114,82 @@ def fingerprint(
     )
 
 
+def rare_process(
+    host: str = "FINANCE-WS04",
+    image: str = "svchost-update.exe",
+) -> Finding:
+    return finding(
+        Predicate.EXECUTES_RARE_PROCESS,
+        Entity(type=EntityType.HOST, value=host),
+        Entity(type=EntityType.PROCESS, value=image),
+        confidence=0.98,
+    )
+
+
+def lineage(host: str = "FINANCE-WS04", image: str = "cmd.exe") -> Finding:
+    return finding(
+        Predicate.EXHIBITS_ANOMALOUS_LINEAGE,
+        Entity(type=EntityType.HOST, value=host),
+        Entity(type=EntityType.PROCESS, value=image),
+        confidence=0.97,
+    )
+
+
+class TestProcessPivot:
+    """A process finding pivots on the image and asks about other machines.
+
+    Three things differ from every pivot above it, and each is a way the
+    generated query returns nothing forever while looking like a clean estate.
+    """
+
+    def test_the_image_is_matched_as_a_path_suffix(self) -> None:
+        r"""The proposition names a basename; the log column holds a full path.
+
+        `Image: "powershell.exe"` compares `powershell.exe` against
+        `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` and
+        matches nothing. The suffix separator is a path separator here and a
+        dot for a DNS zone, which is why it is a field rather than a constant.
+        """
+        rule = yaml.safe_load(queries_for(rare_process(), (Dialect.SIGMA,))[0].query)
+        selection = rule["detection"]["selection"]
+        assert "Image|endswith" in selection
+        assert selection["Image|endswith"] == "\\svchost-update.exe"
+
+    def test_the_subject_column_is_the_hostname(self) -> None:
+        """Network telemetry answers "which other addresses". This answers
+        "which other machines", and those are different columns."""
+        rule = yaml.safe_load(queries_for(rare_process(), (Dialect.SIGMA,))[0].query)
+        assert rule["detection"]["filter_known"] == {"Computer": "FINANCE-WS04"}
+        assert "src_ip" not in rule["detection"]["filter_known"]
+
+    def test_the_log_source_is_process_creation(self) -> None:
+        rule = yaml.safe_load(queries_for(rare_process(), (Dialect.SIGMA,))[0].query)
+        assert rule["logsource"]["category"] == "process_creation"
+
+    def test_no_zeek_pipeline_is_generated(self) -> None:
+        """Zeek writes no process log, and a zeek-cut over a file that does
+        not exist returns nothing forever — the reason `matches_threat_intel`
+        declines to pivot on a hash rather than emitting a query for one."""
+        dialects = {q.dialect for q in queries_for(rare_process())}
+        assert Dialect.ZEEK not in dialects
+        assert dialects == {Dialect.SIGMA, Dialect.KQL, Dialect.SPL}
+
+    def test_an_explicit_zeek_request_yields_nothing_rather_than_a_bad_query(self) -> None:
+        assert queries_for(rare_process(), (Dialect.ZEEK,)) == []
+
+    def test_both_host_predicates_pivot(self) -> None:
+        for query in queries_for(lineage(), (Dialect.KQL,)):
+            assert "DeviceProcessEvents" in query.query
+            assert 'DeviceName != "FINANCE-WS04"' in query.query
+
+    def test_the_indicator_is_offered_for_hunting(self) -> None:
+        incident = Incident(findings=[rare_process(), lineage()])
+        assert [e.value for e in pivot_entities(incident)] == [
+            "svchost-update.exe",
+            "cmd.exe",
+        ]
+
+
 class TestTlsFingerprintPivot:
     """A JA3 is an indicator, but not one of the kinds already templated.
 

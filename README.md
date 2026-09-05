@@ -90,6 +90,8 @@ the model's job.**
 | **Suricata Alert Triage** | Deduplication, estate-wide signature rarity, category weighting | **working** ² |
 | **Threat Intel Matcher** | Local IOC files joined to addresses, netblocks and DNS names; confidence from feed provenance and indicator age, never from traffic volume | **working** ⁴ |
 | **DGA Detector** | Per-family NXDOMAIN rate, bigram improbability against an embedded English character model, digit and consonant structure | **working** ⁵ |
+| **Rare Process & Lineage Analyzer** | Estate-wide image prevalence, a graded prior over where a binary lives, and parent→child edges scored as conditional breadth over a directed lineage graph | **working** ⁸ |
+| **Sysmon JSON-lines ingest** | Windows process creations from any collector's newline-delimited JSON. No EVTX dissector, no new dependency | **working** |
 | **TLS Fingerprint Rarity** | Estate-wide JA3 prevalence, weighted by how much estate the rarity was measured over | **working** ⁶ |
 | **Zeek ssl.log ingest** | TLS sessions and JA3/JA3S client fingerprints | **working** |
 | **Hunt Query Generator** | Ranked incident → Sigma / KQL / SPL / Zeek, by templating, no model | **working** |
@@ -197,6 +199,41 @@ not a second thing the host did; it is better information about the first
 thing. Letting it count would hand a stale or over-broad feed the power to
 multiply the priority of every host that touched anything in it.
 [`docs/benchmarks.md`](docs/benchmarks.md) §10.
+
+⁸ **Synthetic sensitivity, and a real *refusal* rather than a real
+detection.** This is the first result here shaped that way, and it is the one
+worth reading. A real, openly-licensed, correctly-formatted corpus of Windows
+attack telemetry is committed — OTRF Security-Datasets, MIT, licence verified
+by fetching it, 447 process creations from the APT29 ATT&CK Evaluations
+emulation — and it contains a genuine true positive. **The analyzer declines
+to score it.** Four hosts over half an hour is not an estate: 74% of the
+images in that capture are seen on exactly one machine, `lsass.exe`,
+`explorer.exe`, `csrss.exe` and `winlogon.exe` among them, so a rarity measure
+over it ranks `lsass.exe` identically with the attacker's payload. Reporting
+the payload would mean reporting `lsass.exe`.
+
+Both verbs are *estate-relative* — the Lexicon says "rare across the observed
+estate" and "inconsistent with normal system behaviour" — so estate prevalence
+is not a component of these scores, it is the signal that **defines** them.
+With it unavailable the verb is unsayable, and unlike the volume analyzer
+there is no weaker predicate to fall back to. So the analyzer gates and emits
+nothing, and `voidai doctor --telemetry` prints which floor was missed, because
+"declined" and "found nothing" look identical from outside.
+
+Synthetic: 6 of 6 planted executions across two shapes that cannot see each
+other — three novel binaries found by rarity, three *entirely ordinary*
+binaries in an impossible relationship (`winword.exe → cmd.exe →
+powershell.exe`) found by lineage. One false positive, a legitimate installer
+in a user's Downloads folder, which is planted and **stays**: every threshold
+that removes it also removes a staging tool in `C:\Users\Public`.
+
+The component the plan called for is missing again, and again it was measured
+rather than argued: **command-line entropy does not work**, for a different
+reason than §9's. The encodings attackers actually use are *less* entropic
+than ordinary command lines — base64 of UTF-16LE is half null bytes — and the
+7,106-character payload in that capture sits at the **38th percentile** of its
+own corpus, below a routine `SearchProtocolHost.exe` invocation.
+[`docs/benchmarks.md`](docs/benchmarks.md) §11.
 
 ### Measured, on real malware traffic
 
@@ -335,19 +372,30 @@ An estimate is never dressed up as a measurement.
 voidai demo
 ```
 
-Generates a capture in four real sensor formats — Zeek `conn.log`, Zeek
-`ssl.log`, passivedns, Suricata EVE — runs the full pipeline, and puts the
-compromised host at the top of the queue. One host beacons, sweeps a port,
-tunnels DNS, resolves algorithmically generated domains and trips two rare
-signatures; nothing in the data labels it. Under a second, no model, no GPU,
-no network.
+Generates a capture in five real sensor formats — Zeek `conn.log`, Zeek
+`ssl.log`, passivedns, Suricata EVE, Sysmon JSON lines — runs the full
+pipeline, and puts the compromised host at the top of the queue. One host
+beacons, sweeps a port, tunnels DNS, resolves algorithmically generated
+domains, trips two rare signatures, runs a binary the estate has never run and
+lets an Office application spawn a shell; nothing in the data labels it. Under
+a second, no model, no GPU, no network.
 
 ```
- #  Severity  Prio  Subject        Behaviours                                             Findings
- 1  CRITICAL  2.50  ip:10.0.1.14   beacons_to, resolves_algorithmic_domain, scans, trig…       10
- 2  CRITICAL  0.89  ip:10.0.1.23   tunnels_dns_over                                             1
- 3  HIGH      0.87  ip:10.0.1.17   beacons_to                                                   1
+ #  Severity  Prio  Subject                    Behaviours                                          Findings
+ 1  CRITICAL  2.50  ip:10.0.1.14               beacons_to, resolves_algorithmic_domain, scans, t…        10
+ 2  HIGH      1.50  host:FINANCE-WS04          executes_rare_process, exhibits_anomalous_lineage          3
+ 3  MEDIUM    0.98  host:WS019.contoso.local   executes_rare_process                                      1
+ 4  CRITICAL  0.89  ip:10.0.1.23               tunnels_dns_over                                           1
+ 5  HIGH      0.87  ip:10.0.1.17               beacons_to                                                 1
 ```
+
+**Rows 1 and 2 are the same machine, and that is a real limitation, not a
+generator quirk.** Sysmon records a computer name and no address, so the
+network sensors and the endpoint agent describe `10.0.1.14` and
+`FINANCE-WS04` without anything to join them. Joining them needs an asset
+inventory; `AnalysisContext.ip_to_host` is shaped for one and nothing yet
+populates it. Row 3 is the planted false positive — a legitimate installer,
+run once, from a user's Downloads folder — left in rather than tuned away.
 
 ## Installation
 
@@ -380,6 +428,7 @@ voidai demo                             # generate a capture and run everything
 voidai lexicon                          # print the complete grammar
 voidai doctor                           # pre-flight: platform, energy source, model
 voidai doctor --intel ./ioc/            # …and what the IOC files actually loaded
+voidai doctor --telemetry ./logs/       # …and whether the estate can support a rarity claim
 voidai version                          # version and detected power profile
 ```
 

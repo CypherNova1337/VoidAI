@@ -18,12 +18,14 @@ from rich.table import Table
 from rich.text import Text
 
 from voidai import __version__
-from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext, TlsDgaConfig
+from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext, HostConfig, TlsDgaConfig
+from voidai.analyzers.host import estate_baseline, host_summary
 from voidai.correlate import IncidentQueue, build_queue
 from voidai.hunt import Dialect, queries_for_incident
 from voidai.ingest.ioc import IOC_SUFFIX, load_indicators
 from voidai.ingest.passivedns import load_passivedns
 from voidai.ingest.suricata import load_alerts
+from voidai.ingest.sysmon import load_processes
 from voidai.ingest.zeek import load_connections, load_dns, load_ssl
 from voidai.lexicon import GRAMMAR, EntityType, Finding, Severity
 from voidai.reason import Reasoner, ReasoningConfig, ReasoningResult, default_backend
@@ -270,11 +272,20 @@ def _detect(
     # written without the JA3 package. `voidai doctor --telemetry` tells them
     # apart; the analyzer is silent for either.
     ssl = load_ssl(path)
+    # Windows process creations, as JSON lines. Empty for every network-only
+    # capture, which is all of them in this project's corpora — and empty here
+    # means the two host predicates are silent rather than degraded.
+    processes = load_processes(path)
     # Indicators are read from files and never retrieved. Absent by default:
     # `*.ioc` alongside the telemetry, or wherever `--intel` points.
     indicators = load_indicators(intel or path)
     ctx = AnalysisContext(
-        connections=connections, dns=dns, alerts=alerts, ssl=ssl, indicators=indicators
+        connections=connections,
+        dns=dns,
+        alerts=alerts,
+        ssl=ssl,
+        processes=processes,
+        indicators=indicators,
     )
 
     # Driven from DEFAULT_ANALYZERS so `voidai doctor` cannot report a set
@@ -479,6 +490,7 @@ def bench(
         run_benchmark,
         run_dga_benchmark,
         run_egress_benchmark,
+        run_host_benchmark,
         run_tls_benchmark,
     )
 
@@ -535,6 +547,26 @@ def bench(
         "JA3 was reachable, so this measures the arithmetic and not the detector.[/dim]"
     )
     _render_receipt(tls.receipt)
+
+    # A fifth corpus, and the one whose accuracy figure means the least on its
+    # own. The host analyzer's real result is a *refusal* — on the only
+    # openly-licensed corpus available it declines to score at all, because
+    # four hosts is not an estate. See `docs/benchmarks.md` section 11 and
+    # `tests/test_host.py::TestTheGate`.
+    console.print(f"\n[dim]Generating {hours:g}h host telemetry corpus (seed {seed})…[/dim]")
+    host = run_host_benchmark(seed=seed, hours=hours)
+    console.print()
+    console.print(_accuracy_table("Detection accuracy — host and endpoint", host.detection))
+    _render_findings(host.findings)
+    console.print(
+        "[dim]Synthetic sensitivity, and the one false positive is planted: a "
+        "legitimate installer in a user's Downloads folder, run once. It is "
+        "indistinguishable from a dropped payload by everything measured here, "
+        "so it is counted rather than tuned away. Real telemetry contributes a "
+        "gate result and no detection rate — the largest openly-licensed corpus "
+        "is four hosts, and the analyzer correctly declines to score it.[/dim]"
+    )
+    _render_receipt(host.receipt)
 
 
 _HUNT_SUFFIX = {
@@ -839,6 +871,47 @@ def _tls_row(table: Table, telemetry: Path | None) -> None:
         )
 
 
+def _host_row(table: Table, telemetry: Path | None) -> None:
+    """Report whether the estate can support a prevalence claim.
+
+    The same shape as `_tls_row`, for the same reason and a worse version of
+    it. Host telemetry has *three* states an operator cannot tell apart from
+    outside: no process log at all, a process log from an estate too small to
+    measure rarity over, and a healthy estate on which nothing was found. All
+    three print no findings.
+
+    The middle one is the trap this cluster exists around. Every "rare
+    process" signal degenerates on a small estate, where everything is rare
+    exactly once, so the analyzer declines rather than emitting a perfect
+    rarity score for every binary ever run — and an operator who cannot see
+    that is being told "clean" when they are being told "not measured".
+    """
+    if telemetry is None:
+        table.add_row("host", "[dim]none given — pass --telemetry to check a Sysmon log[/dim]")
+        return
+
+    if not telemetry.exists():
+        table.add_row("host", f"[red]not found:[/red] {escape(str(telemetry))}")
+        return
+
+    events = load_processes(telemetry)
+    if events.is_empty():
+        table.add_row("host", "[dim]no Sysmon JSON lines found — host analysis inactive[/dim]")
+        return
+
+    baseline = estate_baseline(host_summary(events))
+    reason = baseline.gate(HostConfig())
+    if reason is None:
+        table.add_row("host", f"[green]{escape(baseline.summary())}[/green]")
+        return
+
+    table.add_row("host", f"[yellow]{escape(baseline.summary())}[/yellow]")
+    table.add_row(
+        "",
+        f"[dim]no host finding will be emitted: {escape(reason)}[/dim]",
+    )
+
+
 @app.command()
 def doctor(
     model: Path | None = typer.Option(None, "--model", help="GGUF model to check for."),
@@ -846,7 +919,9 @@ def doctor(
         None, "--intel", help=f"Directory or file of local {IOC_SUFFIX} indicators to check."
     ),
     telemetry: Path | None = typer.Option(
-        None, "--telemetry", help="Directory of Zeek logs to check for TLS fingerprints."
+        None,
+        "--telemetry",
+        help="Directory of logs to check for TLS fingerprints and host telemetry.",
     ),
 ) -> None:
     """Pre-flight check: platform, energy source, optional components.
@@ -909,6 +984,7 @@ def doctor(
 
     _intel_row(table, intel)
     _tls_row(table, telemetry)
+    _host_row(table, telemetry)
 
     table.add_row("analyzers", ", ".join(a.name for a in DEFAULT_ANALYZERS))
     table.add_row("predicates", f"{len(GRAMMAR)} in the Lexicon")

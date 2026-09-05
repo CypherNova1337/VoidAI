@@ -1385,7 +1385,442 @@ and only the flag holds.
 
 ---
 
-## 11. What is still open
+## 11. Host and endpoint — a real corpus, and a refusal to score it
+
+The first half of roadmap section 5: `executes_rare_process` and
+`exhibits_anomalous_lineage`, one analyzer, one parser, one baseline.
+`establishes_persistence` and `authentication_anomaly` are deliberately not
+built — see the roadmap section for why that split and not another.
+
+**The headline is not the accuracy figure.** It is that a real, openly
+licensed, correctly formatted corpus of Windows attack telemetry exists, is
+now committed, contains a genuine true positive, and the analyzer **declines
+to score it** — correctly, because four hosts is not an estate. That is a
+harder result to claim by accident than "no false positives observed", and it
+is the one worth reading.
+
+| | Synthetic estate | Real corpus (`tests/data/real.sysmon.jsonl.gz`) |
+|---|---|---|
+| Hosts | 40 | **4** |
+| Process creations | 3,388 | 446 |
+| Distinct images | 26 | 107 |
+| Images on exactly one host | 23% | **74%** |
+| Findings | 7 | **0 — gated** |
+| Precision / recall | 0.857 / 1.000 | not measurable |
+
+Reproduce with `voidai bench` (fifth table) and
+`voidai doctor --telemetry <dir>`.
+
+### The trap, and the answer
+
+Roadmap section 5 names it: *rarity needs an estate.* Every "rare process"
+signal degenerates on a single host, where everything is rare exactly once.
+
+The answer turns on what each verb *asserts*. The Lexicon already says:
+`executes_rare_process` is "runs a process rare across the observed estate",
+and `exhibits_anomalous_lineage` is "a parent/child relationship inconsistent
+with normal system behaviour" — where the only thing this analyzer knows about
+normal is what the estate did. Estate prevalence is therefore not a
+*component* of these scores. It is the signal that **defines** them.
+
+That is rule 6's second level, and the answer is the one cluster 1 reached for
+`exfiltrates_to` on direction-blind NetFlow: if the defining signal is
+unavailable, the verb is unsayable. **Gate and emit nothing.**
+
+Unlike cluster 1 there is no weaker predicate to fall back to. `exfiltrates_to`
+could degrade to `transfers_anomalous_volume` because the grammar already had
+one; there is no `executes_process_from_unusual_path`, and minting one is a
+Lexicon change — cross-cutting work, deferred rather than approved, and noted
+here as a candidate so the next cluster does not rediscover the gap.
+
+### Three gates, and the one that was measured rather than chosen
+
+```
+min_baseline_hosts   5      distinct hosts reporting process telemetry
+min_executions       200    total process creations
+max_singleton_share  0.50   share of images seen on exactly one host
+```
+
+The first two are ordinary floors. The third is the one that matters, and it
+is the first gate in this project set by measurement instead of judgement.
+
+Host count alone passes an estate that is wide but **shallow** — thirty
+machines observed for twenty seconds each — where every image is still a
+singleton and every rarity score is still 1.0. The share of single-host images
+detects that directly, because it asks whether the baseline has converged
+rather than how many machines are in it.
+
+The real corpus is what set it. Its distribution:
+
+```
+images on 1 host   79      images on 3 hosts   2
+images on 2 hosts  18      images on 4 hosts   8      (107 distinct)
+```
+
+**74% of images are seen on exactly one host, and they include `lsass.exe`,
+`explorer.exe`, `csrss.exe`, `smss.exe`, `winlogon.exe` and `spoolsv.exe`.**
+Every one of those runs on every Windows machine ever built. They are
+"rare" here because the capture is half an hour long and its four hosts are
+unevenly instrumented — SCRANTON contributes 359 of the 446 executions,
+UTICA contributes 9.
+
+So a rarity measure over this capture ranks `lsass.exe` identically with the
+APT29 day-1 payload, which is present in the file:
+
+```
+explorer.exe → C:\ProgramData\victim\‮cod.3aka3.scr   "…\‮cod.3aka3.scr" /S
+```
+
+Reporting the payload here would mean reporting `lsass.exe` too. The analyzer
+reports neither, and `tests/test_host.py::TestTheGate` asserts both halves of
+that: **zero findings, and 447 records parsed.** The pairing is the point —
+"the analyzer declined" and "the parser returned nothing" look identical from
+outside, and only one of them is correct.
+
+The capture fails two gates independently: four hosts against a floor of five,
+and 74% against a ceiling of 50%. Lowering the host floor to four does not
+unlock it, which is asserted rather than assumed.
+
+### So: synthetic sensitivity, real specificity, and rule 7 in one sentence
+
+**Sensitivity is synthetic. The real corpus contributes a gate result and no
+detection rate.** Not for want of a corpus — the format is right and the
+licence is verified — but for want of an estate. The largest openly-licensed
+Windows attack corpus available is four hosts over half an hour, which is
+below this cluster's own floor.
+
+### What was checked, and what was rejected
+
+**`OTRF/Security-Datasets` — MIT, Copyright (c) 2021 Open Threat Research
+Forge.** Verified by fetching `LICENSE`, not by reputation. Ships JSON lines
+with `EventID`, `Hostname`, `UtcTime`, `Image`, `CommandLine`, `ParentImage`
+and `ProcessGuid` at the top level, so **no EVTX parser and no new
+dependency** — roadmap rule 9 satisfied without an extra.
+
+Committed as `tests/data/real.sysmon.jsonl.gz`: every event-ID-1 record from
+`compound/apt29/day1`, verbatim except the `Message` field, which is a
+human-readable rendering of the structured fields already present and was
+503 KB of the original 1,316 KB. 66 KB gzipped, against `real.passivedns`'s
+52 KB. Attribution is carried **in-band** in a comment header, the way
+`real.passivedns` carries its CC-BY line — a licence recorded only in a
+document is a licence that goes missing the first time the file is copied.
+
+**`sbousseaden/EVTX-ATTACK-SAMPLES` — GPL-3.0**, verified the same way. Not
+vendored, for two independent reasons: GPL-3.0 data in an Apache-2.0
+repository is a licence conflict not worth taking on for a fixture, and the
+samples are `.evtx` binaries needing the parser rule 9 puts behind an extra.
+Either reason alone would have been enough.
+
+### Command-line entropy was measured and removed
+
+The roadmap asked for command-line length **and entropy**. Entropy is not in
+the score, and the reason is not section 9's.
+
+Section 9 found entropy fails on 6-to-20-character domain labels because at
+that length it measures length. Command lines are hundreds of characters, so
+that objection does not apply — and it fails anyway, for a different reason:
+**the encodings attackers actually use are less entropic than ordinary command
+lines.** Base64 of UTF-16LE text is half null bytes, and null bytes are
+extremely predictable.
+
+Measured over the real corpus's 446 command lines:
+
+| | Length | Entropy | Percentile |
+|---|---|---|---|
+| The Empire base64 payload | 7,106 | 4.44 | **38th** |
+| `SearchProtocolHost.exe Global\UsGthr…` | 308 | 5.22 | 96th |
+| Corpus median | 55 | 4.44 | 50th |
+
+Sixty-two percent of the command lines in a capture of a live intrusion score
+*higher* than its largest encoded payload. A component that ranks the attack
+below the median is not a weak component; it is a wrong one.
+
+**Length alone does separate it** — 7,106 against a 99th percentile of 308 —
+but only against the image's own baseline. Scored against a global constant it
+is a constant drag: a typical 55-character line scores 0.09 on any saturating
+curve wide enough to distinguish 7,106, so every finding in the estate is
+multiplied down by roughly the same amount and the threshold simply moves.
+That is not a signal, it is a units change.
+
+So the command line is carried in the **evidence payload**, where an analyst
+reads it first, and not in the arithmetic. A per-image length deviation —
+`powershell.exe` normally 90 characters, this instance 7,106, through the
+existing `robust_deviation` — is the candidate replacement and is left for
+whoever needs it, unbuilt rather than guessed at.
+
+`executes_rare_process` therefore scores three components, not four:
+
+| Component | Measure | Weight |
+|---|---|---|
+| `image_prevalence` | hosts running it, through `destination_rarity` | 0.50 |
+| `path_anomaly` | graded prior over where the binary lives | 0.34 |
+| `execution_prevalence` | how few times it ran estate-wide | 0.16 |
+
+### The lineage measurement had to be rewritten, and why
+
+The first version scored an edge on the raw number of hosts showing it, plus
+`-log2 P(child | parent)` from the estate's lineage graph. It found every
+planted implant. It also swallowed the other predicate whole: **all seven
+findings came back as lineage and `executes_rare_process` was structurally
+unreachable.**
+
+The reason is arithmetic rather than tuning. `hosts(edge) ≤ hosts(child)`
+always, so a binary the estate has never run *always* has an edge the estate
+has never seen. Raw edge rarity cannot distinguish an anomalous relationship
+from a novel participant, because a novel participant guarantees one.
+
+The conditional frequency did not save it either, and failed in the opposite
+direction. `winword.exe` in the corpus has spawned exactly one process, so
+`P(cmd.exe | winword.exe)` is 1.0 — surprisal zero — and the strongest
+lineage signal available annihilated the clearest true positive in the corpus.
+Both measures were reading the sample size.
+
+What works is **conditional breadth on both ends**:
+
+| Component | Measure | Weight |
+|---|---|---|
+| `parent_breadth` | `1 − hosts(edge)/hosts(parent)` | 0.38 |
+| `child_breadth` | `1 − hosts(edge)/hosts(child)` | 0.38 |
+| `child_surprisal` | `-log2 P(child\|parent)`, omitted below 20 samples | 0.24 |
+
+Dividing by how widespread each end is separates the two cases completely, and
+the corpus's own decoys show it:
+
+```
+winword.exe → cmd.exe        1 host of 40.  winword on 40, cmd on 40.
+                             parent_breadth 0.98, child_breadth 0.98   → 0.98
+cmd.exe → msbuild.exe        1 host of 40.  cmd on 40, msbuild on 1.
+                             parent_breadth 0.98, child_breadth 0.00   → 0.15
+```
+
+Both edges are on exactly one host out of forty. The developer's `msbuild.exe`
+runs on one machine and is spawned by `cmd.exe` on that machine every single
+time, so its parentage is entirely typical *of msbuild*, and the measure says
+so. The same arithmetic rejects `cmd.exe → psexec64.exe`, an administrator's
+tool whose only parent anywhere is `cmd.exe`.
+
+It also makes the two predicates disjoint by construction rather than by
+filter, which is what fixes the swallowing: a novel child scores zero on
+`child_breadth` because `hosts(edge) = hosts(child) = 1`.
+
+### Subsumption, and where it had to live
+
+Even with the breadths conditional, one process creation can satisfy both
+predicates when a novel binary reaches a second host. Reported as two
+findings it becomes **two independent behaviours of the host**, and the
+corroboration multiplier promotes the incident for one event observed twice —
+the argument that keeps `presents_rare_tls_fingerprint` out of the count.
+
+So a `(host, image)` that earned `executes_rare_process` cannot also earn
+`exhibits_anomalous_lineage`.
+
+**Rare-process wins, and not because it is more severe** — lineage is the HIGH
+one. It wins because it names what is actually unusual: a binary the estate
+has never run trivially arrives on an edge the estate has never seen, so the
+lineage sentence is true and adds nothing. The reverse does not hold, which is
+the whole of why `winword.exe → cmd.exe` is a finding at all.
+
+**It has to be in the analyzer, not in `correlate/incidents.py`.** The
+correlator sees two findings about one host and cannot know they describe a
+single execution. The analyzer that produced both knows exactly. Nothing in
+the correlator changed for this cluster.
+
+The bug this hid, found by breaking the fix (rule 8): the subsumption was
+originally computed from the **capped** rare-process list, so every novel
+binary the per-host ceiling dropped came back under the other predicate. The
+cap was bounding the display and quietly widening the behaviour count. Both
+predicates are now scored in full before either is capped, and
+`test_a_capped_rare_finding_does_not_reappear_as_lineage` guards it.
+
+### Corroboration: `executes_rare_process` does corroborate
+
+Two prevalence predicates are already excluded from the multiplier, so the
+question had to be asked. The test that settles it is not "is it prevalence":
+
+1. **Is it a behaviour of the subject, or a property of something else?**
+2. **Does it rest on more than one cheap signal?**
+
+`contacts_rare_destination` is a behaviour but fires on a single cheap signal
+at LOW severity — excluded for flood risk. `presents_rare_tls_fingerprint` is
+one signal and is really a property of the client's TLS library, not a thing
+the host chose to do. `matches_threat_intel` is a property of the destination.
+`shares_infrastructure_with` is a property of the environment. `precedes` is
+derived.
+
+`executes_rare_process` passes both. Running an unfamiliar binary out of a
+user-writable directory is unambiguously a thing the host *did*, and it is a
+geometric mean of three signals at MEDIUM. A host that beacons **and** does
+that is genuinely two behaviours, which is what the multiplier is for. And
+after subsumption, a standing-alone rare-process finding means "rare, and the
+lineage looked normal" — a real and separate claim.
+
+Recorded here because the "is it prevalence" reading would have excluded it
+and been wrong, and the next cluster faces the same question.
+
+**The number attached to it**, so the question is not settled by argument
+alone: on the synthetic estate, 7 findings across 5 hosts produce **1
+corroborated incident**. On `voidai demo`, host telemetry adds **1**
+corroborated incident and 2 queue rows. On CTU-13 it adds nothing, because
+there is no host telemetry there. If it floods on a real estate that is
+measurable and revisitable, the same way egress was.
+
+### Synthetic accuracy, and the false positive that stays
+
+```
+6 TP · 1 FP · 0 FN     precision 0.857   recall 1.000   f1 0.923
+3,388 records · 40 hosts · 8h · 7 findings · 196 MB peak
+```
+
+Six plants, in two shapes that cannot see each other:
+
+- **Three novel binaries** — a dropped executable in a user temp directory, a
+  service binary masquerading under `ProgramData`, a staging tool in
+  `C:\Users\Public`. Found by rarity.
+- **Three ordinary binaries in an impossible relationship** —
+  `winword.exe → cmd.exe → powershell.exe` and
+  `outlook.exe → powershell.exe`. Every image runs on all forty machines.
+  Found by lineage, and **invisible to rarity by construction.**
+
+Each plant is scored only against the predicate it was planted for. Counting
+each against both would report a 50% miss rate for a detector behaving exactly
+as specified — the shape section 9 avoided by counting a dictionary generator
+as a miss and *saying so* rather than dropping it from the denominator.
+
+Three decoys are rejected: the developer toolchain and the administrator's
+tool described above, and a rare-but-ordinary lineage.
+
+**The one false positive is planted and stays.** A legitimate 7-Zip installer
+in a user's Downloads folder, run once: rare image, writable path, single
+execution. It is indistinguishable from a dropped payload by everything this
+analyzer measures, and every threshold that removes it also removes the
+staging tool in `C:\Users\Public`. Section 7's backup target, on a different
+axis. Moving a threshold until the corpus looks clean is fitting to the
+corpus, and the corpus was written by the same hand as the detector.
+
+It costs a queue position on the demo, and that is reported rather than
+hidden: at priority 0.98 it takes rank 3, above two genuine single-behaviour
+beaconing incidents at 0.87 and 0.85. A single strong rarity finding
+outranking a single strong periodicity finding is the arithmetic working as
+designed — neither corroborates, and 0.98 is a higher confidence than 0.87 —
+but it is the first time a *planted* false positive has ranked above a *real*
+detection anywhere in this document, and it is the strongest argument on this
+page for the asset inventory in section 12. An inventory that knew
+`WS019` was a developer workstation would not demote it; one that knew the
+installer's hash was signed would. Neither exists.
+
+### Cost
+
+```
+1,946,000 process creations · 300 hosts · 706 MB frame
+0.81 s · 2.4M rec/s · peak RSS 192 MB above the frame
+```
+
+Rule 3 holds and is the reason. Pass one groups the capture to one row per
+(host, parent image, image) — 24,000 rows for two million executions, because
+its height is the number of distinct lineage *relationships* rather than the
+number of events — and pass two gathers arrays only for triples that could
+still reach a threshold. On the estate above that is a few hundred rows.
+`test_pass_two_gathers_a_small_fraction_of_the_capture` asserts the ratio
+directly rather than measuring RSS, because the row count is the property that
+decides the memory and an RSS assertion is flaky.
+
+Rule 2 holds too: the analyzer runs eighth and releases, so the run's peak is
+unchanged. The demo's peak RSS is 269 MB with host telemetry in the capture.
+
+The bounded ancestry walk is the one place this cluster spends passes rather
+than memory. Each level of the climb is a scan filtered to the GUIDs the level
+below asked for, up to `max_chain_depth` of them, and the rows held are
+bounded by candidates × depth. A process-creation log is dense in distinct
+*subjects* rather than in records — two million executions here against
+CTU-13's 12.7 million flows — so trading four cheap scans for a flat memory
+profile is the right way round on this telemetry, and it is the opposite of
+the trade `beaconing` makes.
+
+### CTU-13 is a no-op by construction
+
+NetFlow and passivedns carry no process telemetry. `ctx.processes` is empty on
+every scenario, both predicates return before the gate is even reached, and
+scenario 3 rank 2 of 247 with 3 corroborated and scenario 6 rank 1 of 160 with
+1 corroborated cannot move.
+
+That is asserted rather than assumed —
+`test_a_network_only_capture_is_silent` builds a connection-only context and
+requires an empty result. If a re-measurement moves a rank, something reached
+the queue that this test says cannot, and the finding is the bug rather than
+the number.
+
+### What it cost, for whoever takes the next one
+
+**Two of fifteen tests passed for a reason other than the one they named**,
+and rule 8 is what found them. A cycle test on the ancestry walk asserted only
+that the walk *terminates* — which the depth bound guarantees on its own, so
+it passed with the cycle guard removed. What the guard actually buys is the
+chain's **content**: without it a two-node cycle reports `a → b → a → b`, an
+ancestry that never happened, in an evidence payload an analyst is meant to
+trust. The second was a truncated-chain test standing in for the `nulls_equal`
+join guard while containing no null parent at all; the real exposure is a
+process whose parent started before the capture window, which is the shape of
+the first execution on a host the sensor started watching mid-intrusion.
+
+**A size-preserving mutation leaves stale bytecode.** Breaking `start=1` to
+`start=0` and reverting it produced a `.pyc` whose cache key — mtime and size
+— was unchanged, so the *next* run imported the mutant and a passing test
+failed for no visible reason. Anyone repeating the rule 8 exercise should run
+the mutants with `-B`.
+
+**The rule 12 shuffle earns its place here more than anywhere.** Ties are not
+an edge case in this telemetry, they are the norm: every singleton image sits
+at an identical prevalence of 1.0 and every one-off execution at an identical
+execution prevalence, so four of the seven synthetic findings score 0.980
+exactly. Running the same frame twice would not have caught a `group_by`
+ordering leaking into the cap; shuffling the input rows does, and it caught
+nothing only because the tiebreak was written first.
+
+**Host telemetry and network telemetry do not join, and that is now visible.**
+Sysmon event ID 1 records a computer name and no address, so the demo's
+compromised machine appears in the queue **twice** — `ip:10.0.1.14` for
+everything the network sensors saw, and `host:FINANCE-WS04` for what the
+endpoint agent saw. The corroboration payoff the roadmap promises for this
+cluster is therefore only half collected: two host behaviours corroborate each
+other, and neither corroborates the five network behaviours on the same
+machine.
+
+Closing it needs an asset inventory mapping addresses to hostnames.
+`AnalysisContext.ip_to_host` is already shaped for exactly that and nothing
+populates it — the same gap section 12 names for demoting a gateway, arriving
+from a second direction. It is one small parser and it is deliberately not in
+this branch.
+
+**`networkx` earned its place, in two ways, after eight commits of being a
+dependency one analyzer used for connected components.** The estate's observed
+lineage is a directed graph and the conditional frequency comes off its
+out-strength; the per-host process tree, built from `ProcessGuid` and
+`ParentProcessGuid`, is a second one, walked for ordered ancestry with a
+visited set. `explorer → winword → cmd` and `explorer → cmd` are different
+things for a responder to read.
+
+**Chain surprisal is reported and not scored, after three attempts.** The mean
+edge anomaly along an ancestry dilutes the one edge that matters with the
+ordinary ones above it — `explorer → winword` is on every host, and averaging
+it with a 0.98 gives 0.49. The maximum restates `parent_breadth` exactly. A
+count of unusual edges scores a genuine single-step anomaly at zero. A
+component that restates another is the double-count this analyzer already
+exists to prevent, so the chain stays in the evidence payload, the basis line
+and the summary — where it does real work for a reader — until there is a
+measurement of it that is not a restatement.
+
+**The shipper's clock is not the sensor's clock, and the gap is not small.**
+`@timestamp` is when the collector received a record; `UtcTime` is when the
+process started. On the committed corpus they differ by a **median of 34
+seconds and a maximum of 84**, and 366 of 446 records differ by more than one
+second — which is the correlator's floor for ordering two behaviours from a
+single source. Taking `@timestamp` would not have blurred an ordering. It
+would have invented one, in the predicate cluster 4 built specifically to
+avoid that.
+
+---
+
+## 12. What is still open
 
 **Corroboration is broad but shallow on real data.** Seven analyzers now
 exist, and multi-way corroboration ranks correctly on synthetic traffic —
@@ -1419,14 +1854,23 @@ real true positive is scenario 6's Menti channel at 2.16 MB. Closing that
 needs a capture with labelled exfiltration in it, which is a data problem
 rather than a code one.
 
-**The estate has no identity.** VoidAI does not know which of its hosts is a
-mail relay, a resolver, or a domain controller. `147.32.84.229` ranks first on
-scenario 3 because it reaches 162,612 destinations, which is exactly what a
-gateway does. The volume analyzer meets the same wall from the other side: its
-single false positive is a backup target that exactly one machine uses, which
-no signal available to it can distinguish from a private drop box. An asset
-inventory would demote both in one step, and the `AnalysisContext` already
-carries `ip_to_host` for exactly this.
+**The estate has no identity, and it now costs a detection rather than only a
+false positive.** VoidAI does not know which of its hosts is a mail relay, a
+resolver, or a domain controller. `147.32.84.229` ranks first on scenario 3
+because it reaches 162,612 destinations, which is exactly what a gateway does.
+The volume analyzer meets the same wall from the other side: its single false
+positive is a backup target that exactly one machine uses, which no signal
+available to it can distinguish from a private drop box.
+
+Section 11 adds a third face of the same gap and the most expensive one.
+Sysmon records a computer name and no address, so a machine with both network
+and host telemetry produces **two incidents** — `ip:10.0.1.14` and
+`host:FINANCE-WS04` on `voidai demo` — and the conjunction this cluster was
+built to surface is split in half before the correlator sees it. An asset
+inventory would demote the gateway, demote the backup target and join those
+two rows, all in one step. `AnalysisContext.ip_to_host` is already shaped for
+it and nothing populates it; it is one small parser and the highest-value one
+left on this list.
 
 **The DGA character model has never seen a non-English estate.** Its word
 list is English, so a German or Turkish second-level label reads as
@@ -1442,6 +1886,26 @@ at all, so TLS fingerprint rarity is synthetic on both sides and its threshold
 was set against a corpus written by the same hand as the detector. Both are
 data problems.
 
+**Host telemetry has no real sensitivity figure, and the reason is an estate
+rather than a corpus.** Section 11 has a real, MIT-licensed, correctly
+formatted corpus of Windows attack telemetry with a genuine true positive in
+it, and the analyzer correctly refuses to score it: four hosts over half an
+hour, with 74% of images seen on exactly one machine. Closing it needs a
+labelled capture from an estate of tens of machines, which is a data problem
+and a harder one than the others on this list — public corpora are built to
+demonstrate a technique, and one host is enough for that.
+
+**Two host predicates remain unclaimed.** `establishes_persistence` and
+`authentication_anomaly` are declared in the Lexicon and deliberately not
+built; roadmap section 5 says why. Neither shares the parser or the baseline
+that made the first two one unit of work.
+
+**A per-image command-line baseline is unbuilt.** Section 11 measured entropy
+and removed it, and left length out because a global constant makes it a
+constant drag. Length against the *image's own* distribution — through the
+existing `robust_deviation` — is the measurement that would work, and it is
+guessed at nowhere.
+
 **Memory headroom on the largest capture.** 2,662 MB does fit a 4GB board —
 measured against a hard cgroup ceiling, section 3 — but with roughly 1.1 GB
 spare rather than a wide margin. A third analyzer did not change that, and a
@@ -1450,7 +1914,7 @@ it further.
 
 ---
 
-## 12. Energy
+## 13. Energy
 
 Every figure on this page was produced on x86_64 with **estimated** energy —
 this container exposes no RAPL counters, and the fallback profile deliberately
@@ -1463,21 +1927,29 @@ verified.
 
 ---
 
-## 13. Reproducing
+## 14. Reproducing
 
 ```bash
-# Synthetic — no download required. Prints four tables against four separate
+# Synthetic — no download required. Prints five tables against five separate
 # corpora: beaconing (section 1), volume-and-egress (section 7), domain
-# generation and TLS fingerprints (both section 9). Never averaged: they
-# measure different behaviours against different decoys, and their evidence
-# is not of the same kind.
+# generation and TLS fingerprints (both section 9), host and endpoint
+# (section 11). Never averaged: they measure different behaviours against
+# different decoys, and their evidence is not of the same kind.
 voidai bench
 
 # Threat intel: section 8. No corpus to download — the fixture is committed.
 voidai doctor --intel tests/data/example.ioc
 
 # TLS fingerprints: whether a capture can support section 9's second half.
+# Host telemetry: whether its estate can support section 11's predicates at
+# all, and the reason in full if it cannot. Both from the same flag.
 voidai doctor --telemetry ./capture
+
+# Section 11's real corpus is committed; this is the refusal, reproduced.
+python -c "from voidai.analyzers import HostAnalyzer, AnalysisContext; \
+from voidai.ingest.sysmon import read_sysmon; \
+e = read_sysmon('tests/data/real.sysmon.jsonl.gz'); \
+print(e.height, 'records ->', HostAnalyzer().analyze(AnalysisContext(processes=e)))"
 
 # CTU-13 scenario 6 (245MB) and scenario 3 (1.4GB)
 mkdir -p data/ctu13 && cd data/ctu13

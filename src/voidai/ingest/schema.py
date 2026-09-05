@@ -76,6 +76,41 @@ SSL_SCHEMA: dict[str, pl.DataType] = {
     "source_line": pl.Int64,
 }
 
+# Process-creation records (Sysmon EID 1, exported as JSON lines)
+
+#: Host telemetry, and the first schema in this project whose subject is a
+#: machine rather than a flow. `host` is the estate key: every measurement the
+#: host analyzer makes is a prevalence across distinct values of this column,
+#: so a capture that cannot populate it cannot support the predicates at all.
+#:
+#: `parent_image` is null for the roots of a process tree — a process whose
+#: parent started before the capture window. That is an ordinary outcome and
+#: not a parse failure, so joins on it must keep nulls rather than drop them.
+#:
+#: Sysmon writes far more than this. The columns kept are the ones a
+#: prevalence or lineage measurement reads, plus enough to mint an Artifact;
+#: `conform` drops the other forty on the way in, which is what keeps a
+#: process-creation log — denser per host-hour than any connection log — from
+#: costing more memory than the capture it describes.
+PROCESS_SCHEMA: dict[str, pl.DataType] = {
+    "ts": pl.Float64,  # epoch seconds
+    "host": pl.Utf8,  # the estate key
+    "user": pl.Utf8,
+    "image": pl.Utf8,  # full path of the executable
+    "command_line": pl.Utf8,
+    "current_directory": pl.Utf8,
+    "integrity_level": pl.Utf8,
+    "process_guid": pl.Utf8,  # links a process to its children
+    "process_id": pl.Int64,
+    "parent_image": pl.Utf8,  # null at the root of a tree
+    "parent_command_line": pl.Utf8,
+    "parent_guid": pl.Utf8,
+    "parent_process_id": pl.Int64,
+    "sha256": pl.Utf8,
+    "source_file": pl.Utf8,
+    "source_line": pl.Int64,
+}
+
 # Alert records (Suricata EVE, Snort)
 
 ALERT_SCHEMA: dict[str, pl.DataType] = {

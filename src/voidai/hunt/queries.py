@@ -68,12 +68,15 @@ _TELEMETRY: dict[str, str] = {
     "domain": "dns",
     "signature": "alert",
     "ja3": "tls",
+    "image": "process",
 }
 
 #: Field names per dialect, indexed by what the value *means* rather than by
 #: where it came from. Keeps the templates below free of vendor detail.
 _FIELDS: dict[Dialect, dict[str, str]] = {
     Dialect.SIGMA: {
+        "image": "Image",
+        "host": "Computer",
         "src": "src_ip",
         "dst": "dst_ip",
         "dst_port": "dst_port",
@@ -82,6 +85,8 @@ _FIELDS: dict[Dialect, dict[str, str]] = {
         "ja3": "ja3",
     },
     Dialect.KQL: {
+        "image": "FolderPath",
+        "host": "DeviceName",
         "src": "SourceIP",
         "dst": "DestinationIP",
         "dst_port": "DestinationPort",
@@ -90,6 +95,8 @@ _FIELDS: dict[Dialect, dict[str, str]] = {
         "ja3": "Ja3Hash",
     },
     Dialect.SPL: {
+        "image": "Image",
+        "host": "host",
         "src": "src_ip",
         "dst": "dest_ip",
         "dst_port": "dest_port",
@@ -98,6 +105,11 @@ _FIELDS: dict[Dialect, dict[str, str]] = {
         "ja3": "ssl_ja3",
     },
     Dialect.ZEEK: {
+        # No process telemetry: zeek-cut reads Zeek logs and Zeek does not
+        # write one. The entries exist so the table stays total; a process
+        # pivot never reaches this dialect — see `_Pivot.dialects`.
+        "image": "image",
+        "host": "host",
         "src": "id.orig_h",
         "dst": "id.resp_h",
         "dst_port": "id.resp_p",
@@ -116,24 +128,28 @@ _SOURCES: dict[Dialect, dict[str, str]] = {
         "dns": "  category: dns_query",
         "alert": "  product: suricata\n  service: alert",
         "tls": "  category: network_connection\n  service: tls",
+        "process": "  category: process_creation\n  product: windows",
     },
     Dialect.KQL: {
         "connection": "NetworkEvents",
         "dns": "DnsEvents",
         "alert": "SecurityAlert",
         "tls": "TlsEvents",
+        "process": "DeviceProcessEvents",
     },
     Dialect.SPL: {
         "connection": "index=network",
         "dns": "index=dns",
         "alert": "index=ids",
         "tls": "index=tls",
+        "process": "index=sysmon EventCode=1",
     },
     Dialect.ZEEK: {
         "connection": "conn.log",
         "dns": "dns.log",
         "alert": "notice.log",
         "tls": "ssl.log",
+        "process": "<none>",
     },
 }
 
@@ -219,6 +235,22 @@ class _Pivot:
     #: equality test on the zone apex would return nothing, forever, and look
     #: like a clean estate.
     match: str = "exact"
+    #: What a suffix match is a suffix *of*. A tunnelling zone is a DNS suffix
+    #: and takes a dot; an image name is a path suffix and takes a separator.
+    #: Without it, `Image: "powershell.exe"` compares a basename against a
+    #: column holding `C:\\Windows\\System32\\…\\powershell.exe` and
+    #: matches nothing, forever, while looking like a clean estate.
+    suffix_separator: str = "."
+    #: Which column names the entity a hunt groups and excludes by. Network
+    #: telemetry answers "which other addresses"; process telemetry answers
+    #: "which other machines", and those are different columns.
+    subject_field: str = "src"
+    #: Dialects this pivot can be rendered in, or None for all of them. Only
+    #: process pivots restrict it: `zeek-cut` reads Zeek logs, Zeek writes no
+    #: process log, and a pipeline over a file that does not exist returns
+    #: nothing forever while looking like a clean estate — the same reason
+    #: `matches_threat_intel` declines to pivot on a hash.
+    dialects: tuple[Dialect, ...] | None = None
 
     @property
     def numeric(self) -> bool:
@@ -231,8 +263,8 @@ class _Pivot:
 
     @property
     def comparand(self) -> str:
-        """The literal to compare against, including the suffix's leading dot."""
-        return f".{self.value}" if self.match == "suffix" else self.value
+        """The literal to compare against, including any suffix separator."""
+        return f"{self.suffix_separator}{self.value}" if self.match == "suffix" else self.value
 
 
 def _pivot_for(finding: Finding) -> _Pivot | None:
@@ -348,6 +380,36 @@ def _pivot_for(finding: Finding) -> _Pivot | None:
             ),
         )
 
+    if finding.predicate in (
+        Predicate.EXECUTES_RARE_PROCESS,
+        Predicate.EXHIBITS_ANOMALOUS_LINEAGE,
+    ):
+        # The pivot is the image name, and the question is which *other
+        # machines* ran it — so the subject column is the hostname rather than
+        # a source address, and the known host is excluded so the answer is
+        # new information. `matches_threat_intel`'s rationale applies here in
+        # reverse: VoidAI measured rarity over one capture's window, and the
+        # estate's history is what says whether that rarity is real.
+        #
+        # No `zeek` dialect. Zeek writes no process log, and a zeek-cut
+        # pipeline over a file that does not exist returns nothing forever.
+        return _Pivot(
+            field="image",
+            value=target.value,
+            exclude_src=subject.value if subject.type is EntityType.HOST else None,
+            match="suffix",
+            suffix_separator="\\",
+            subject_field="host",
+            dialects=(Dialect.SIGMA, Dialect.KQL, Dialect.SPL),
+            title=f"Other hosts executing {target.value}",
+            rationale=(
+                "Rarity was measured over this capture's window. Whether the "
+                "image is rare in the estate's history, or merely rare in what "
+                "was captured, is the question this answers — and a second "
+                "machine running it is a second machine to look at."
+            ),
+        )
+
     if finding.predicate is Predicate.TRIGGERED_SIGNATURE:
         return _Pivot(
             field="signature",
@@ -382,7 +444,7 @@ def _sigma(pivot: _Pivot, finding: Finding) -> str:
     if source:
         condition = (
             f"  filter_known:\n"
-            f'    {fields["src"]}: "{source}"\n'
+            f'    {fields[pivot.subject_field]}: "{source}"\n'
             f"  condition: selection and not filter_known"
         )
     else:
@@ -424,13 +486,13 @@ def _kql(pivot: _Pivot, finding: Finding) -> str:
     else:
         predicate = f'{field} == "{value}"'
 
-    exclusion = f'\n| where {fields["src"]} != "{source}"' if source else ""
+    exclusion = f'\n| where {fields[pivot.subject_field]} != "{source}"' if source else ""
     return (
         f"// {_printable(pivot.title)} — VoidAI finding {finding.id}\n"
         f"{table}\n"
         f"| where {predicate}{exclusion}\n"
         f"| summarize Events = count(), FirstSeen = min(TimeGenerated), "
-        f'LastSeen = max(TimeGenerated) by {fields["src"]}\n'
+        f'LastSeen = max(TimeGenerated) by {fields[pivot.subject_field]}\n'
         f"| order by Events desc"
     )
 
@@ -450,12 +512,12 @@ def _spl(pivot: _Pivot, finding: Finding) -> str:
     else:
         term = f'{field}="{value}"'
 
-    exclusion = f' {fields["src"]}!="{source}"' if source else ""
+    exclusion = f' {fields[pivot.subject_field]}!="{source}"' if source else ""
     return (
         f"``` {_printable(pivot.title)} — VoidAI finding {finding.id} ```\n"
         f"{index} {term}{exclusion}\n"
         f"| stats count AS events, min(_time) AS first_seen, max(_time) AS last_seen "
-        f'BY {fields["src"]}\n'
+        f'BY {fields[pivot.subject_field]}\n'
         f"| sort - events"
     )
 
@@ -490,7 +552,7 @@ def _zeek(pivot: _Pivot, finding: Finding) -> str:
     # separator, `ET TROJAN Beacon` becomes three fields and $2 is "TROJAN".
     return (
         f"# {_printable(pivot.title)} — VoidAI finding {finding.id}\n"
-        f'cat {log} | zeek-cut {fields["src"]} {field} \\\n'
+        f'cat {log} | zeek-cut {fields[pivot.subject_field]} {field} \\\n'
         f"  | awk -F'\\t' {assignments} '{condition} {{ print $1 }}' \\\n"
         f"  | sort | uniq -c | sort -rn"
     )
@@ -516,6 +578,10 @@ def queries_for(
     if pivot is None:
         return []
 
+    wanted = dialects or tuple(Dialect)
+    if pivot.dialects is not None:
+        wanted = tuple(d for d in wanted if d in pivot.dialects)
+
     return [
         HuntQuery(
             dialect=dialect,
@@ -525,7 +591,7 @@ def queries_for(
             finding_id=finding.id,
             rationale=pivot.rationale,
         )
-        for dialect in (dialects or tuple(Dialect))
+        for dialect in wanted
     ]
 
 

@@ -23,6 +23,7 @@ from voidai.ingest.schema import (
     ALERT_SCHEMA,
     CONNECTION_SCHEMA,
     DNS_SCHEMA,
+    PROCESS_SCHEMA,
     SSL_SCHEMA,
     empty,
 )
@@ -57,6 +58,20 @@ class AnalysisContext:
     #: as either — see `analyzers/tlsdga.py`.
     ssl: Frame = field(default_factory=lambda: empty(SSL_SCHEMA))
 
+    #: Windows process-creation records — Sysmon event ID 1, shipped as JSON
+    #: lines. Empty unless host telemetry was found, and empty is the common
+    #: case: this project's network corpora carry none at all, so the two host
+    #: predicates are silent on every capture in `docs/benchmarks.md` before
+    #: section 11.
+    #:
+    #: Present-but-too-small is a *third* state and the important one. Both
+    #: host predicates are estate-relative — "rare across the estate", "unlike
+    #: what this parent normally spawns" — so a capture from one machine
+    #: carries the telemetry and still cannot support either claim. The
+    #: analyzer measures that and declines, rather than emitting a rarity
+    #: score of 1.0 for every process ever run; see `analyzers/host.py`.
+    processes: Frame = field(default_factory=lambda: empty(PROCESS_SCHEMA))
+
     #: Indicators the operator placed on disk. Empty unless an IOC file was
     #: found, and empty is the normal case: intel is optional, and a run
     #: without it runs one analyzer fewer rather than failing. Loaded here
@@ -90,6 +105,9 @@ class AnalysisContext:
     def ssl_scan(self) -> pl.LazyFrame:
         return self._scan(self.ssl)
 
+    def process_scan(self) -> pl.LazyFrame:
+        return self._scan(self.processes)
+
     def record_count(self) -> int:
         """Total records available.
 
@@ -101,7 +119,7 @@ class AnalysisContext:
             return self.known_record_count
 
         total = 0
-        for frame in (self.connections, self.dns, self.alerts, self.ssl):
+        for frame in (self.connections, self.dns, self.alerts, self.ssl, self.processes):
             if isinstance(frame, pl.DataFrame):
                 total += frame.height
             else:

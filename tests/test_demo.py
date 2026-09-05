@@ -2,8 +2,8 @@
 
 `voidai demo` is the first thing anyone evaluating this project will run, so
 it is tested like a feature rather than left as a script. The assertions below
-are the claims the demo makes out loud: three real formats, four behaviours on
-one host, and that host at the top of the queue.
+are the claims the demo makes out loud: five real formats, several behaviours
+on one host, and that host at the top of the queue.
 """
 
 from __future__ import annotations
@@ -15,10 +15,21 @@ import pytest
 from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext
 from voidai.correlate import build_queue
 from voidai.eval.synth import build_demo_capture
-from voidai.ingest import load_alerts, load_connections, load_dns, load_passivedns, load_ssl
+from voidai.ingest import (
+    load_alerts,
+    load_connections,
+    load_dns,
+    load_passivedns,
+    load_processes,
+    load_ssl,
+)
 from voidai.lexicon import Finding
 
 PATIENT_ZERO = "10.0.1.14"
+#: The same machine, as the endpoint agent names it. Sysmon records a computer
+#: name and no address, so until an asset inventory exists the two are separate
+#: subjects and separate incidents — see `docs/benchmarks.md` section 12.
+PATIENT_ZERO_HOST = "FINANCE-WS04"
 
 
 @pytest.fixture(scope="module")
@@ -37,6 +48,7 @@ def queue(capture: Path):  # type: ignore[no-untyped-def]
         dns=load_dns(capture),
         alerts=load_alerts(capture),
         ssl=load_ssl(capture),
+        processes=load_processes(capture),
     )
     findings: list[Finding] = []
     for analyzer in DEFAULT_ANALYZERS:
@@ -45,9 +57,16 @@ def queue(capture: Path):  # type: ignore[no-untyped-def]
 
 
 class TestDemoCapture:
-    def test_writes_all_three_formats(self, capture: Path) -> None:
+    def test_writes_all_five_formats(self, capture: Path) -> None:
         names = {p.name for p in capture.iterdir()}
-        assert {"conn.log", "dns.log", "capture.passivedns", "ssl.log", "eve.json"} <= names
+        assert {
+            "conn.log",
+            "dns.log",
+            "capture.passivedns",
+            "ssl.log",
+            "eve.json",
+            "sysmon.jsonl",
+        } <= names
 
     def test_every_file_parses_through_a_production_parser(self, capture: Path) -> None:
         """The demo must not bypass the parsers it is demonstrating."""
@@ -56,6 +75,7 @@ class TestDemoCapture:
         assert load_passivedns(capture).height > 1_000
         assert load_ssl(capture).height > 100
         assert load_alerts(capture).height > 1_000
+        assert load_processes(capture).height > 1_000
 
 
 class TestDemoDetection:
@@ -89,9 +109,20 @@ class TestDemoDetection:
         }
 
     def test_priority_clears_the_field(self, queue) -> None:  # type: ignore[no-untyped-def]
-        """Corroboration must be visible, not a hair's breadth."""
-        top, runner_up = queue.incidents[0], queue.incidents[1]
-        assert top.priority > runner_up.priority * 2
+        """Corroboration must be visible, not a hair's breadth.
+
+        Measured against the highest-ranked incident that is *not* the
+        compromised machine. Patient zero now occupies two rows — one per
+        identity, until an asset inventory joins them — and comparing the
+        first against the second would compare it against itself.
+        """
+        top = queue.incidents[0]
+        others = [
+            r
+            for r in queue.incidents
+            if r.subject.value not in (PATIENT_ZERO, PATIENT_ZERO_HOST)
+        ]
+        assert top.priority > others[0].priority * 2
 
     def test_alert_flood_is_suppressed(self, queue) -> None:  # type: ignore[no-untyped-def]
         """55 hosts trip policy rules thousands of times and reach no incident."""
@@ -100,6 +131,41 @@ class TestDemoDetection:
             "triggered_signature" not in {p.value for p in r.corroborating_predicates}
             for r in noisy
         )
+
+    def test_the_endpoint_sees_a_second_incident_on_the_same_machine(self, queue) -> None:  # type: ignore[no-untyped-def]
+        """Two host behaviours, corroborating each other and nothing else.
+
+        This is the cluster's payoff and its limitation in one row. The
+        endpoint agent sees a binary the estate has never run *and* an Office
+        application spawning a shell, which corroborate: two independent
+        things one machine did.
+
+        They do not corroborate the five network behaviours on the same
+        machine, because nothing joins `10.0.1.14` to `FINANCE-WS04` — Sysmon
+        records a computer name and no address. Asserted rather than left
+        implicit, so that adding an asset inventory later shows up here as a
+        failing test rather than as a silent change in the queue.
+        """
+        rank = queue.rank_of(PATIENT_ZERO_HOST)
+        assert rank is not None
+        ranked = queue.incidents[rank - 1]
+        assert {p.value for p in ranked.corroborating_predicates} == {
+            "executes_rare_process",
+            "exhibits_anomalous_lineage",
+        }
+        assert queue.rank_of(PATIENT_ZERO) != rank
+
+    def test_the_host_estate_is_large_enough_to_be_measured(self, capture: Path) -> None:
+        """The demo must demonstrate the detector, not the gate.
+
+        `tests/data/real.sysmon.jsonl.gz` already demonstrates the gate, on
+        real telemetry. A demo estate below the floor would emit nothing and
+        look like a broken analyzer.
+        """
+        from voidai.analyzers.host import HostConfig, estate_baseline, host_summary
+
+        baseline = estate_baseline(host_summary(load_processes(capture)))
+        assert baseline.gate(HostConfig()) is None
 
     def test_every_finding_is_evidenced(self, queue) -> None:  # type: ignore[no-untyped-def]
         for ranked in queue.incidents:
@@ -164,6 +230,7 @@ class TestTheCommandItself:
         from voidai.cli import _behaviours_cell
         from voidai.correlate import build_queue
         from voidai.ingest.suricata import load_alerts
+        from voidai.ingest.sysmon import load_processes
         from voidai.ingest.zeek import load_connections, load_dns, load_ssl
 
         ctx = AnalysisContext(
@@ -171,6 +238,7 @@ class TestTheCommandItself:
             dns=load_dns(capture),
             alerts=load_alerts(capture),
             ssl=load_ssl(capture),
+            processes=load_processes(capture),
         )
         findings = []
         for analyzer in DEFAULT_ANALYZERS:

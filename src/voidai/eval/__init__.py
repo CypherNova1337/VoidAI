@@ -4,9 +4,11 @@ from voidai.eval.benchmark import (
     BenchmarkResult,
     DetectionScore,
     DgaBenchmarkResult,
+    HostBenchmarkResult,
     TlsBenchmarkResult,
     run_benchmark,
     run_dga_benchmark,
+    run_host_benchmark,
     run_tls_benchmark,
 )
 from voidai.eval.synth import (
@@ -15,6 +17,8 @@ from voidai.eval.synth import (
     DgaCorpus,
     DgaCorpusGenerator,
     DgaFamily,
+    HostCorpus,
+    HostCorpusGenerator,
     Implant,
     RareClient,
     TlsCorpus,
@@ -30,6 +34,9 @@ __all__ = [
     "DgaCorpus",
     "DgaCorpusGenerator",
     "DgaFamily",
+    "HostBenchmarkResult",
+    "HostCorpus",
+    "HostCorpusGenerator",
     "Implant",
     "RareClient",
     "TlsBenchmarkResult",
@@ -37,5 +44,6 @@ __all__ = [
     "TlsCorpusGenerator",
     "run_benchmark",
     "run_dga_benchmark",
+    "run_host_benchmark",
     "run_tls_benchmark",
 ]
