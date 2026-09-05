@@ -196,6 +196,34 @@ class CorrelationConfig:
     #: is not evidence of compromise.
     non_evidential: frozenset[Predicate] = frozenset({Predicate.PRECEDES})
 
+    def __post_init__(self) -> None:
+        """Enforce the ladder the two sets encode between them.
+
+        They are not two spellings of "does not count". They are three rungs:
+
+          *corroborating* — an independent behaviour of the subject. Counts
+            toward the multiplier and the noisy-OR. The default.
+          *supporting* — a real observation, but not a second thing the subject
+            did. `non_corroborating` only: noisy-OR, no multiplier.
+          *derived* — not an observation at all, minted by the correlator from
+            findings already counted. Both sets: neither term.
+
+        Membership of the inner set without the outer would mean a finding that
+        raises the multiplier while contributing no confidence — a predicate
+        counted as an independent behaviour on the strength of evidence the
+        arithmetic refuses to look at. Nothing enforced this until the ladder
+        had a second rung to fall off, so it is enforced here rather than left
+        to whoever adds the third.
+        """
+        stray = self.non_evidential - self.non_corroborating
+        if stray:
+            names = ", ".join(sorted(p.value for p in stray))
+            raise ValueError(
+                f"non_evidential must be a subset of non_corroborating; {names} "
+                "would count toward the corroboration multiplier while "
+                "contributing nothing to the confidence that justifies it"
+            )
+
     #: Follow the object → unary-subject edge when forming incidents, so an
     #: intel hit joins the host that reached the address. See `_attach_unary`.
     attach_unary: bool = True

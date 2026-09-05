@@ -674,3 +674,32 @@ class TestUnaryAttachment:
         )
         assert len(queue) == 2
         assert queue.rank_of("45.83.220.17") == 2
+
+
+class TestTheLadderIsEnforced:
+    """The two config sets encode three rungs; the nesting must hold.
+
+    `non_evidential` sitting outside `non_corroborating` would mean a finding
+    that raises the corroboration multiplier while contributing nothing to the
+    confidence that is supposed to justify it. Coherent today only because one
+    person held both facts in mind at once.
+    """
+
+    def test_the_default_config_is_coherent(self) -> None:
+        config = CorrelationConfig()
+        assert config.non_evidential <= config.non_corroborating
+
+    def test_an_inverted_ladder_is_rejected_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="subset of non_corroborating"):
+            CorrelationConfig(
+                non_corroborating=frozenset(),
+                non_evidential=frozenset({Predicate.PRECEDES}),
+            )
+
+    def test_the_error_names_the_offending_predicate(self) -> None:
+        """A rejection an author cannot act on is a rejection they will bypass."""
+        with pytest.raises(ValueError, match="precedes"):
+            CorrelationConfig(
+                non_corroborating=frozenset({Predicate.SHARES_INFRASTRUCTURE_WITH}),
+                non_evidential=frozenset({Predicate.PRECEDES}),
+            )
