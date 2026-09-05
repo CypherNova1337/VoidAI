@@ -302,17 +302,18 @@ An estimate is never dressed up as a measurement.
 voidai demo
 ```
 
-Generates a capture in three real sensor formats — Zeek `conn.log`,
-passivedns, Suricata EVE — runs the full pipeline, and puts the compromised
-host at the top of the queue. One host beacons, sweeps a port, tunnels DNS and
-trips two rare signatures; nothing in the data labels it. Under a second, no
-model, no GPU, no network.
+Generates a capture in four real sensor formats — Zeek `conn.log`, Zeek
+`ssl.log`, passivedns, Suricata EVE — runs the full pipeline, and puts the
+compromised host at the top of the queue. One host beacons, sweeps a port,
+tunnels DNS, resolves algorithmically generated domains and trips two rare
+signatures; nothing in the data labels it. Under a second, no model, no GPU,
+no network.
 
 ```
  #  Severity  Prio  Subject        Behaviours                                             Findings
- 1  CRITICAL  2.50  ip:10.0.1.14   beacons_to, scans, triggered_signature, tunnels_dns…          5
- 2  CRITICAL  0.89  ip:10.0.1.23   tunnels_dns_over                                              1
- 3  HIGH      0.87  ip:10.0.1.17   beacons_to                                                    1
+ 1  CRITICAL  2.50  ip:10.0.1.14   beacons_to, resolves_algorithmic_domain, scans, trig…        9
+ 2  CRITICAL  0.89  ip:10.0.1.23   tunnels_dns_over                                             1
+ 3  HIGH      0.87  ip:10.0.1.17   beacons_to                                                   1
 ```
 
 ## Installation

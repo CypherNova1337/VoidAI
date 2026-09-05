@@ -98,6 +98,35 @@ def _render_evidence(findings: list[Finding]) -> None:
                 console.print(f"      [dim]… and {len(evidence.artifacts) - 3} more[/dim]")
 
 
+def _behaviours_cell(ranked: object) -> str:
+    """The Behaviours column: what this host did, and which of it corroborates.
+
+    Corroborating predicates are highlighted when there is more than one,
+    because that conjunction is what moves an incident up the queue. The rest
+    are listed dimmed rather than dropped.
+
+    Dropping them was a real defect. Five of eighteen predicates are now
+    non-corroborating, and an incident whose findings are *all* of that kind —
+    a lone rare TLS fingerprint, say — rendered with a priority, a severity and
+    a blank reason. A queue row that cannot say why it is there is the one
+    thing this tool must never print.
+    """
+    corroborating = tuple(ranked.corroborating_predicates)  # type: ignore[attr-defined]
+    present = {f.predicate for f in ranked.incident.findings}  # type: ignore[attr-defined]
+    supporting = sorted(p.value for p in present - set(corroborating))
+
+    lead = ", ".join(p.value for p in corroborating)
+    if len(corroborating) > 1:
+        lead = f"[bold yellow]{escape(lead)}[/bold yellow]"
+    elif lead:
+        lead = escape(lead)
+
+    if not supporting:
+        return lead
+    trailing = f"[dim]{escape(', '.join(supporting))}[/dim]"
+    return f"{lead}, {trailing}" if lead else trailing
+
+
 def _render_queue(queue: IncidentQueue, limit: int = 20) -> None:
     """Print the analyst-facing queue, highest priority first.
 
@@ -122,14 +151,12 @@ def _render_queue(queue: IncidentQueue, limit: int = 20) -> None:
     table.add_column("Findings", justify="right", no_wrap=True)
 
     for position, ranked in enumerate(queue.top(limit), start=1):
-        behaviours = ", ".join(p.value for p in ranked.corroborating_predicates)
-        multiple = len(ranked.corroborating_predicates) > 1
         table.add_row(
             str(position),
             _severity_text(ranked.incident.severity),
             f"{ranked.priority:.2f}",
             escape(str(ranked.subject)),
-            f"[bold yellow]{escape(behaviours)}[/bold yellow]" if multiple else escape(behaviours),
+            _behaviours_cell(ranked),
             str(len(ranked.incident.findings)),
         )
 

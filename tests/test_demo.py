@@ -150,3 +150,67 @@ class TestTheCommandItself:
             args.append("--no-llm")
         result = CliRunner().invoke(cli.app, args)
         assert result.exit_code == 0, result.output
+
+    def test_every_queued_incident_states_a_reason(self, capture: Path) -> None:
+        """No queue row may carry a priority and a blank Behaviours cell.
+
+        The cell was built only from corroborating predicates. Five of the
+        eighteen predicates no longer corroborate, so an incident whose
+        findings are all of that kind — a lone rare TLS fingerprint — rendered
+        with a severity, a priority and no stated reason. An analyst cannot
+        triage a row that will not say why it is there.
+        """
+        from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext
+        from voidai.cli import _behaviours_cell
+        from voidai.correlate import build_queue
+        from voidai.ingest.suricata import load_alerts
+        from voidai.ingest.zeek import load_connections, load_dns, load_ssl
+
+        ctx = AnalysisContext(
+            connections=load_connections(capture),
+            dns=load_dns(capture),
+            alerts=load_alerts(capture),
+            ssl=load_ssl(capture),
+        )
+        findings = []
+        for analyzer in DEFAULT_ANALYZERS:
+            findings += analyzer().analyze(ctx)
+
+        queue = build_queue(findings)
+        assert queue.incidents, "the demo capture must produce incidents"
+        blank = [
+            r.subject.value for r in queue.incidents if not _behaviours_cell(r).strip()
+        ]
+        assert not blank, f"incidents listed with no reason: {blank}"
+
+    def test_a_wholly_non_corroborating_incident_still_states_a_reason(self) -> None:
+        """The specific case, built directly rather than hoped for in a corpus."""
+        from voidai.cli import _behaviours_cell
+        from voidai.correlate import build_queue
+        from voidai.lexicon import (
+            Artifact,
+            Entity,
+            EntityType,
+            Evidence,
+            Finding,
+            Predicate,
+        )
+
+        finding = Finding(
+            predicate=Predicate.PRESENTS_RARE_TLS_FINGERPRINT,
+            subject=Entity(type=EntityType.IP, value="10.0.3.52"),
+            object=Entity(type=EntityType.TLS_FINGERPRINT, value="a" * 32),
+            evidence=[
+                Evidence(
+                    kind="ja3_rarity",
+                    summary="synthetic",
+                    artifacts=[Artifact(source="ssl.log", locator="line:1")],
+                )
+            ],
+            confidence=0.83,
+            basis="synthetic",
+            analyzer="test@0",
+        )
+        ranked = build_queue([finding]).incidents[0]
+        assert not ranked.corroborating_predicates, "fixture must be non-corroborating"
+        assert "presents_rare_tls_fingerprint" in _behaviours_cell(ranked)
