@@ -62,8 +62,20 @@ class CorrelationConfig:
     #: Predicates that describe environment rather than host behaviour. They
     #: contribute evidence but do not count toward corroboration, so a pair of
     #: bookkeeping observations cannot masquerade as two opinions.
+    #:
+    #: `contacts_rare_destination` belongs here for a different reason than
+    #: the relational two. It is a real observation about the host, but it
+    #: rests on a single cheap signal — estate-wide prevalence — and every
+    #: host that talks to anything unusual earns one. Letting it multiply a
+    #: priority would hand the corroboration bonus to the quietest corner of
+    #: the estate. It enriches an incident other evidence already created,
+    #: and cannot create one on its own.
     non_corroborating: frozenset[Predicate] = frozenset(
-        {Predicate.SHARES_INFRASTRUCTURE_WITH, Predicate.PRECEDES}
+        {
+            Predicate.SHARES_INFRASTRUCTURE_WITH,
+            Predicate.PRECEDES,
+            Predicate.CONTACTS_RARE_DESTINATION,
+        }
     )
 
 

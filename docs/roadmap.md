@@ -1,15 +1,15 @@
 # Roadmap — filling in the Lexicon
 
-Eighteen predicates are declared. Four have an analyzer that emits them. The
+Eighteen predicates are declared. Seven have an analyzer that emits them. The
 vocabulary is ahead of the code on purpose: the grammar was written for the
-system VoidAI is meant to become, and the remaining fourteen predicates are the
+system VoidAI is meant to become, and the remaining eleven predicates are the
 work list.
 
 ```
-18 predicates declared · 4 analyzers built · 14 predicates unclaimed
+18 predicates declared · 5 analyzers built · 11 predicates unclaimed
 ```
 
-This document is the plan for the other fourteen. Each section is a self-contained
+This document is the plan for the other eleven. Each section is a self-contained
 unit of work sized to one branch, and they are ordered by ratio of value
 to lift. **Take one. Do not take two.**
 
@@ -74,6 +74,15 @@ completes.
 ---
 
 ## 1 · Volume and egress — `analyzer-egress`
+
+> **Built.** `src/voidai/analyzers/egress.py`, registered, tested, and scored
+> against a seeded synthetic corpus — 4 of 4 planted transfers, one false
+> positive on a backup target only one machine uses. **The CTU-13 half is not
+> done**: the corpus was unreachable from the environment it was written in,
+> so no real figure is claimed anywhere. The analyzer is wired into
+> `voidai bench --real`; running it and writing the numbers up in
+> `docs/benchmarks.md` §7 is what remains. Everything below stands as the
+> record of what was designed and why.
 
 **Start here.** Three predicates, no new parser, and CTU-13 validates it the day
 it is written.
@@ -330,7 +339,7 @@ vendoring.
 
 | | Cluster | Lift | Why this position |
 |---|---|---|---|
-| 1 | Volume and egress | Low | No new parser; CTU-13 gives real sensitivity and specificity immediately |
+| 1 | Volume and egress | Low | **Built**, synthetic only — CTU-13 pending, see the section |
 | 2 | Threat intel | Low | Cheapest; mostly integration |
 | 3 | TLS and DGA | Medium | Small parser; reuses existing entropy work |
 | 4 | Temporal ordering | Low | No parser at all; markedly improves the narrative |

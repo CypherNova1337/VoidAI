@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -26,6 +27,9 @@ from voidai.ingest.zeek import load_connections, load_dns
 from voidai.lexicon import GRAMMAR, EntityType, Finding, Severity
 from voidai.reason import Reasoner, ReasoningConfig, ReasoningResult, default_backend
 from voidai.telemetry import EnergyMeter, RunReceipt, detect_platform
+
+if TYPE_CHECKING:  # the benchmark harness is imported lazily, at use
+    from voidai.eval.benchmark import DetectionScore
 
 app = typer.Typer(
     name="voidai",
@@ -308,6 +312,33 @@ def run(
         _render_receipt(run_receipt)
 
 
+
+def _accuracy_table(title: str, detection: DetectionScore) -> Table:
+    """Render one corpus's score.
+
+    Misses and false alarms are printed by name rather than counted. A
+    benchmark that reports "1 FP" and stops has told the reader the least
+    useful half of the result; which decoy it fell for is the half that says
+    what to fix.
+    """
+    table = Table(title=title, title_justify="left", show_header=False)
+    table.add_column(style="dim")
+    table.add_column()
+    table.add_row("precision", f"{detection.precision:.3f}")
+    table.add_row("recall", f"{detection.recall:.3f}")
+    table.add_row("f1", f"{detection.f1:.3f}")
+    table.add_row(
+        "confusion",
+        f"{detection.true_positives} TP · {detection.false_positives} FP "
+        f"· {detection.false_negatives} FN",
+    )
+    if detection.missed_labels:
+        table.add_row("missed", escape(", ".join(detection.missed_labels)))
+    if detection.false_positive_pairs:
+        table.add_row("false alarms", escape(", ".join(detection.false_positive_pairs[:5])))
+    return table
+
+
 def _bench_real(path: Path, limit: int) -> None:
     """Score against a labelled real capture — currently the CTU-13 dialect.
 
@@ -387,7 +418,7 @@ def bench(
     limit: int = typer.Option(100_000, help="Cap on findings emitted, highest-scoring first."),
 ) -> None:
     """Score the analyzers against a labelled corpus, and meter the run."""
-    from voidai.eval.benchmark import run_benchmark
+    from voidai.eval.benchmark import run_benchmark, run_egress_benchmark
 
     if real is not None:
         if not real.is_file():
@@ -398,28 +429,22 @@ def bench(
 
     console.print(f"[dim]Generating {hours:g}h corpus (seed {seed})…[/dim]")
     result = run_benchmark(seed=seed, hours=hours)
-    detection = result.detection
-
-    table = Table(title="Detection accuracy", title_justify="left", show_header=False)
-    table.add_column(style="dim")
-    table.add_column()
-    table.add_row("precision", f"{detection.precision:.3f}")
-    table.add_row("recall", f"{detection.recall:.3f}")
-    table.add_row("f1", f"{detection.f1:.3f}")
-    table.add_row(
-        "confusion",
-        f"{detection.true_positives} TP · {detection.false_positives} FP "
-        f"· {detection.false_negatives} FN",
-    )
-    if detection.missed_labels:
-        table.add_row("missed", ", ".join(detection.missed_labels))
-    if detection.false_positive_pairs:
-        table.add_row("false alarms", ", ".join(detection.false_positive_pairs[:5]))
 
     console.print()
-    console.print(table)
+    console.print(_accuracy_table("Detection accuracy — beaconing", result.detection))
     _render_findings(result.findings)
     _render_receipt(result.receipt)
+
+    # A second corpus with its own decoys and its own ground truth. Scored and
+    # printed separately rather than merged: one number covering two analyzers
+    # measuring different behaviours would describe neither.
+    console.print(f"\n[dim]Generating {hours:g}h transfer corpus (seed {seed})…[/dim]")
+    egress = run_egress_benchmark(seed=seed, hours=hours)
+
+    console.print()
+    console.print(_accuracy_table("Detection accuracy — volume and egress", egress.detection))
+    _render_findings(egress.findings)
+    _render_receipt(egress.receipt)
 
 
 _HUNT_SUFFIX = {

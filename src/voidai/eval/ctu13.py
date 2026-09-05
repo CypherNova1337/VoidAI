@@ -31,7 +31,10 @@ from the labels rather than from anything the detector computed.
 
 **Pair precision** — of the source→destination pairs flagged as beaconing,
 what fraction carry botnet labels? Non-circular, and directly interpretable:
-it is the analyst's false-alarm rate.
+it is the analyst's false-alarm rate. Scoped to `beacons_to` deliberately,
+even though three analyzers now run: mixing predicates into one precision
+figure would produce a number that changes whenever the analyzer mix changes
+and means nothing on either side of the change.
 
 **Alert burden** — findings per hour of capture. A detector with excellent
 precision that emits four hundred alerts a day is still unusable, and this is
@@ -49,6 +52,8 @@ from voidai.analyzers import (
     AnalysisContext,
     BeaconingAnalyzer,
     BeaconingConfig,
+    EgressAnalyzer,
+    EgressConfig,
     FanoutAnalyzer,
     FanoutConfig,
 )
@@ -216,6 +221,12 @@ def evaluate(
         findings = BeaconingAnalyzer(config).analyze(ctx)
         cap = config.max_findings if config else FanoutConfig().max_findings
         findings += FanoutAnalyzer(FanoutConfig(max_findings=cap)).analyze(ctx)
+        # NetFlow carries no directional byte split, so `_ANALYSIS_COLUMNS`
+        # has no `resp_bytes` for the egress analyzer to read. It measures
+        # volume, prevalence and novelty and omits the ratio component
+        # entirely — which is the behaviour this corpus is here to exercise,
+        # not a degradation to work around.
+        findings += EgressAnalyzer(EgressConfig(max_findings=cap)).analyze(ctx)
         queue = build_queue(findings)
 
     receipt.records_ingested = records

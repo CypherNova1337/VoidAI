@@ -85,43 +85,54 @@ class Corpus:
         Tests that build a DataFrame directly would never catch a parser
         regression, so the benchmark writes a genuine log and reads it back.
         """
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        return write_zeek_conn_log(self.connections, path)
 
-        frame = self.connections.sort("ts")
-        header = [
-            "#separator \\x09",
-            "#set_separator\t,",
-            "#empty_field\t(empty)",
-            "#unset_field\t-",
-            "#path\tconn",
-            "#fields\t" + "\t".join(_ZEEK_CONN_FIELDS),
-            "#types\ttime\tstring\taddr\tport\taddr\tport\tenum\tstring\tinterval\tcount\tcount\tstring",
-        ]
 
-        rows = []
-        for r in frame.iter_rows(named=True):
-            rows.append(
-                "\t".join(
-                    [
-                        f"{r['ts']:.6f}",
-                        r["uid"] or "-",
-                        r["src_ip"],
-                        str(r["src_port"]),
-                        r["dst_ip"],
-                        str(r["dst_port"]),
-                        r["proto"] or "tcp",
-                        r["service"] or "-",
-                        f"{r['duration']:.6f}" if r["duration"] is not None else "-",
-                        str(r["orig_bytes"]) if r["orig_bytes"] is not None else "-",
-                        str(r["resp_bytes"]) if r["resp_bytes"] is not None else "-",
-                        r["conn_state"] or "SF",
-                    ]
-                )
+def write_zeek_conn_log(connections: pl.DataFrame, path: str | Path) -> Path:
+    """Write a connection frame as a Zeek `conn.log`.
+
+    A free function because more than one corpus needs it and none of them
+    should own it. Every generated corpus goes to disk in the sensor's real
+    format and comes back through the production parser, so a benchmark
+    cannot pass over data the parser could not have produced.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    frame = connections.sort("ts")
+    header = [
+        "#separator \\x09",
+        "#set_separator\t,",
+        "#empty_field\t(empty)",
+        "#unset_field\t-",
+        "#path\tconn",
+        "#fields\t" + "\t".join(_ZEEK_CONN_FIELDS),
+        "#types\ttime\tstring\taddr\tport\taddr\tport\tenum\tstring\tinterval\tcount\tcount\tstring",
+    ]
+
+    rows = []
+    for r in frame.iter_rows(named=True):
+        rows.append(
+            "\t".join(
+                [
+                    f"{r['ts']:.6f}",
+                    r["uid"] or "-",
+                    r["src_ip"],
+                    str(r["src_port"]),
+                    r["dst_ip"],
+                    str(r["dst_port"]),
+                    r["proto"] or "tcp",
+                    r["service"] or "-",
+                    f"{r['duration']:.6f}" if r["duration"] is not None else "-",
+                    str(r["orig_bytes"]) if r["orig_bytes"] is not None else "-",
+                    str(r["resp_bytes"]) if r["resp_bytes"] is not None else "-",
+                    r["conn_state"] or "SF",
+                ]
             )
+        )
 
-        path.write_text("\n".join(header + rows) + "\n")
-        return path
+    path.write_text("\n".join(header + rows) + "\n")
+    return path
 
 
 class CorpusGenerator:
@@ -318,6 +329,240 @@ class CorpusGenerator:
         )
         return Corpus(connections=frame, implants=implants, benign_pairs=benign_pairs)
 
+
+
+
+@dataclass(frozen=True)
+class Transfer:
+    """A planted exfiltration, and the label a detector is scored against."""
+
+    src_ip: str
+    dst_ip: str
+    dst_port: int
+    total_bytes: int
+    flows: int
+    #: Fraction of the capture elapsed before the first flow to this
+    #: destination. The novelty signal is measured against exactly this.
+    starts_at: float
+    label: str
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.src_ip, self.dst_ip)
+
+
+@dataclass
+class EgressCorpus:
+    """Generated transfer telemetry plus the ground truth needed to score it."""
+
+    connections: pl.DataFrame
+    transfers: list[Transfer]
+    #: Benign destinations that are *meant* to be hard, keyed the same way, so
+    #: a scoring run can name which decoy it fell for rather than reporting an
+    #: anonymous false positive.
+    decoys: dict[tuple[str, str], str] = field(default_factory=dict)
+
+    @property
+    def transfer_keys(self) -> set[tuple[str, str]]:
+        return {t.key for t in self.transfers}
+
+    def write_zeek_conn_log(self, path: str | Path) -> Path:
+        return write_zeek_conn_log(self.connections, path)
+
+
+class EgressCorpusGenerator:
+    """Builds labelled bulk-transfer traffic from a seed.
+
+    Separate from `CorpusGenerator` rather than folded into it. That generator
+    and its seed back the published beaconing figures in `docs/benchmarks.md`,
+    and quietly adding traffic to it would invalidate results the same
+    document calls reproducible. `DnsCorpusGenerator` set the precedent.
+
+    Adversarial by design. The benign traffic here is not filler — it is the
+    four categories that break volume detectors, and three of them are
+    *indistinguishable from exfiltration* on volume and direction alone:
+
+      * a nightly backup: enormous, almost entirely outbound, on a schedule
+      * a cloud sync: large, outbound, and reached by the whole estate
+      * a software mirror: large, but inbound, which is the one thing
+        exfiltration never is
+      * a lone backup target used by exactly one host, which is the case
+        estate-wide rarity cannot help with and which is left in deliberately
+
+    A detector that clears the first three has separated *where the bytes went
+    and to whom* from *how many there were*, which is the whole difficulty.
+    The fourth is here to be reported, not to be passed — see
+    `docs/benchmarks.md`.
+    """
+
+    #: Reached by every host in the estate, and reached from the first hour.
+    _BACKUP = "10.0.2.60"
+    _CLOUD_SYNC = "52.216.10.5"
+    _MIRROR = "151.101.1.55"
+    _MAIL = "10.0.2.25"
+    #: Reached by one host only. Rarity says "unique", novelty says "always
+    #: been there", and only the second is right.
+    _LONE_BACKUP = "10.0.2.61"
+
+    def __init__(self, seed: int = 1337) -> None:
+        self.rng = np.random.default_rng(seed)
+        self._uid = 0
+
+    def _next_uid(self) -> str:
+        self._uid += 1
+        return f"E{self._uid:08x}"
+
+    def _flows(
+        self,
+        src_ip: str,
+        dst_ip: str,
+        dst_port: int,
+        timestamps: np.ndarray,
+        orig_bytes: np.ndarray,
+        resp_bytes: np.ndarray,
+        service: str,
+        start_epoch: float,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "ts": start_epoch + float(ts),
+                "uid": self._next_uid(),
+                "src_ip": src_ip,
+                "src_port": int(self.rng.integers(32768, 60999)),
+                "dst_ip": dst_ip,
+                "dst_port": dst_port,
+                "proto": "tcp",
+                "service": service,
+                "duration": float(abs(self.rng.normal(2.0, 0.8))),
+                "orig_bytes": int(max(out, 0)),
+                "resp_bytes": int(max(back, 0)),
+                "orig_pkts": int(max(out // 1400 + 2, 2)),
+                "resp_pkts": int(max(back // 1400 + 2, 2)),
+                "conn_state": "SF",
+                "source_file": "<synthetic>",
+                "source_line": 0,
+            }
+            for ts, out, back in zip(timestamps, orig_bytes, resp_bytes, strict=True)
+        ]
+
+    def _spread(self, duration: float, count: int, start: float = 0.0) -> np.ndarray:
+        """`count` arrivals scattered over the window from `start` onward."""
+        span = max(duration * (1.0 - start), 1.0)
+        return np.sort(duration * start + self.rng.uniform(0.0, span, size=count))
+
+    def _regular(self, duration: float, count: int, start: float) -> np.ndarray:
+        """`count` arrivals on a fixed cadence, the first at `start` exactly.
+
+        Backups, syncs and mirror pulls run on a timer, and where the first
+        one lands is not a coin toss. It matters because it is precisely what
+        the novelty signal measures: a scheduled job is already running when
+        the sensor starts recording, and scattering its first arrival
+        somewhere random inside the window would hand the detector a
+        different — and easier — problem on every seed.
+        """
+        first = duration * start
+        return np.linspace(first, duration, num=count, endpoint=False)
+
+    def generate(
+        self,
+        hours: float = 24.0,
+        benign_hosts: int = 12,
+        start_epoch: float = 1_760_000_000.0,
+    ) -> EgressCorpus:
+        duration = hours * 3600
+        rows: list[dict[str, object]] = []
+        decoys: dict[tuple[str, str], str] = {}
+        hosts = [f"10.0.2.{index + 10}" for index in range(benign_hosts)]
+
+        for host in hosts:
+            # Browsing: many small conversations, and inbound-heavy, because
+            # a page is pulled. Six of them, so every host has a baseline
+            # wide enough for a robust deviation to mean something.
+            for site in range(6):
+                dst = f"93.184.{site}.{self.rng.integers(1, 250)}"
+                count = int(self.rng.integers(60, 200))
+                timestamps = self._spread(duration, count)
+                out = self.rng.lognormal(6.6, 0.8, size=count)
+                rows += self._flows(
+                    host, dst, 443, timestamps, out, out * self.rng.uniform(6.0, 30.0, size=count),
+                    "ssl", start_epoch,
+                )
+
+            # Nightly backup: the hardest benign case on volume and direction.
+            timestamps = self._regular(duration, 24, start=0.02)
+            out = self.rng.normal(90_000_000, 6_000_000, size=24)
+            rows += self._flows(
+                host, self._BACKUP, 22, timestamps, out, out * 0.002, "ssh", start_epoch
+            )
+            decoys[(host, self._BACKUP)] = "nightly-backup"
+
+            # Cloud sync: outbound, large, and reached by the whole estate.
+            timestamps = self._regular(duration, 140, start=0.015)
+            out = self.rng.lognormal(14.4, 0.7, size=140)
+            rows += self._flows(
+                host, self._CLOUD_SYNC, 443, timestamps, out, out * 0.01, "ssl", start_epoch
+            )
+            decoys[(host, self._CLOUD_SYNC)] = "cloud-sync"
+
+            # Software mirror: just as much volume, travelling the other way.
+            timestamps = self._regular(duration, 20, start=0.03)
+            back = self.rng.normal(120_000_000, 20_000_000, size=20)
+            rows += self._flows(
+                host, self._MIRROR, 443, timestamps, back * 0.002, back, "ssl", start_epoch
+            )
+            decoys[(host, self._MIRROR)] = "software-mirror"
+
+            # Mail: modest, outbound, unremarkable.
+            timestamps = self._spread(duration, 90)
+            out = self.rng.lognormal(11.0, 0.9, size=90)
+            rows += self._flows(
+                host, self._MAIL, 25, timestamps, out, out * 0.01, "smtp", start_epoch
+            )
+
+        # One host keeps its own backup target. Nothing else in the estate
+        # touches it, so estate-wide rarity scores it 1.0 — the one benign
+        # shape rarity cannot defend against.
+        lone = hosts[3]
+        timestamps = self._regular(duration, 24, start=0.02)
+        out = self.rng.normal(70_000_000, 5_000_000, size=24)
+        rows += self._flows(
+            lone, self._LONE_BACKUP, 22, timestamps, out, out * 0.002, "ssh", start_epoch
+        )
+        decoys[(lone, self._LONE_BACKUP)] = "lone-host-backup"
+
+        # Planted exfiltration. Each is on a host that also browses, backs up
+        # and syncs, so its baseline and its observation window are those of
+        # an ordinary machine rather than of a machine that only exfiltrates.
+        transfers = [
+            Transfer(hosts[0], "45.83.220.17", 443, 800_000_000, 3, 0.70, "bulk-single-archive"),
+            Transfer(hosts[5], "185.220.101.9", 8443, 600_000_000, 120, 0.40, "staged-chunked"),
+            Transfer(hosts[9], "141.98.11.4", 443, 12_000_000, 40, 0.55, "slow-and-small"),
+            # Below the byte floor for a volume claim, so the strongest thing
+            # sayable about it is that something went somewhere rare. It is
+            # here to exercise that band, and to prove the band is reachable
+            # by something other than noise.
+            Transfer(hosts[2], "179.43.160.8", 443, 600_000, 25, 0.62, "trickle-upload"),
+        ]
+        for transfer in transfers:
+            timestamps = self._spread(duration, transfer.flows, start=transfer.starts_at)
+            share = self.rng.dirichlet(np.full(transfer.flows, 6.0))
+            out = share * transfer.total_bytes
+            rows += self._flows(
+                transfer.src_ip,
+                transfer.dst_ip,
+                transfer.dst_port,
+                timestamps,
+                out,
+                out * self.rng.uniform(0.004, 0.02, size=transfer.flows),
+                "ssl",
+                start_epoch,
+            )
+
+        frame = conform(pl.DataFrame(rows), CONNECTION_SCHEMA).sort("ts")
+        frame = frame.with_columns(
+            pl.int_range(1, frame.height + 1, dtype=pl.Int64).alias("source_line")
+        )
+        return EgressCorpus(connections=frame, transfers=transfers, decoys=decoys)
 
 
 _BASE32 = "abcdefghijklmnopqrstuvwxyz234567"

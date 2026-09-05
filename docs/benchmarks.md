@@ -1,22 +1,34 @@
 # Benchmarks
 
-Two corpora, reported separately and never averaged together. The synthetic
-corpus proves the mathematics; the real captures prove — or disprove — the
-product. Where they disagree, the real captures win.
+Synthetic corpora and real captures, reported separately and never averaged
+together. A synthetic corpus proves the mathematics; a real capture proves —
+or disproves — the product. Where they disagree, the real capture wins.
+
+Which analyzers have a real half is not uniform, and every section says which
+it has. Beaconing has both. DNS tunnelling has real specificity and synthetic
+sensitivity, and section 5 splits them. Alert triage and volume-and-egress
+are synthetic on both halves, and sections 6 and 7 say so before they say
+anything else.
 
 Everything here is reproducible:
 
 ```bash
-voidai bench                              # synthetic, seeded
+voidai bench                              # synthetic, seeded: beaconing, then egress
 voidai bench --real data/ctu13/<file>     # CTU-13, after fetching a capture
 ```
 
 ---
 
-## 1. Synthetic corpus (seed 1337, 24h)
+## 1. Synthetic corpus — beaconing (seed 1337, 24h)
 
 Six planted implants hidden among browsing traffic, a monitoring agent, a
 software update checker, and NTP.
+
+`voidai bench` scores this corpus and then generates a second one for the
+volume-and-egress analyzer — different traffic, different decoys, different
+ground truth. The two are printed as separate tables and never combined; one
+number covering two analyzers measuring different behaviours would describe
+neither. Section 7 has the second.
 
 ```
 precision 1.000 · recall 0.833 · f1 0.909      (5 TP · 0 FP · 1 FN)
@@ -61,6 +73,12 @@ of real botnet traffic on a university network, every flow labelled `Botnet`,
 | Beaconing pair precision | 0.0008 | 0.0025 |
 | Throughput | 223,651 rec/s | 219,088 rec/s |
 | Peak RSS | 2,672 MB | 634 MB |
+
+**These figures were measured with beaconing and fan-out only.** A third
+analyzer — volume and egress, section 7 — now runs on this path as well, which
+changes the finding count, the incident count and possibly the queue ranks.
+The table is left as measured rather than adjusted by reasoning, and is due a
+re-measurement.
 
 Scenario 3's C2 channel (`147.32.84.165 → 38.229.70.20`) is found at 0.958
 confidence — genuinely strong. Scenario 6's Menti channel
@@ -405,19 +423,189 @@ Three bugs the tests caught before this shipped, all in the category table:
 
 ---
 
-## 7. What is still open
+## 7. Volume and egress — synthetic on both halves, CTU-13 not yet run
 
-**Corroboration is broad but shallow on real data.** Four analyzers now exist,
-and multi-way corroboration ranks correctly on synthetic traffic. But CTU-13
-carries neither DNS query names nor alerts, so on the real captures the signal
-is still only two-valued. Closing that needs a capture with network, DNS and
-alert telemetry together — which is a data problem, not a code one.
+**Every number in this section is measured on synthetic traffic. Neither the
+sensitivity nor the specificity figures below have been reproduced on a real
+capture, and no CTU-13 result is reported here because none has been
+measured.** Section 5 splits its two halves because one of them was real; this
+section has no real half at all yet, and saying so is the whole preamble.
+
+The analyzer claims three predicates that are bands of one measurement:
+`exfiltrates_to` (critical/high), `transfers_anomalous_volume` (medium), and
+`contacts_rare_destination` (low). Four signals, combined the same way
+beaconing combines its six:
+
+| Component | Measure | Weight |
+|---|---|---|
+| `egress_ratio` | share of the conversation's bytes that went out | 0.30 |
+| `volume_deviation` | modified z-score against the host's own per-destination distribution | 0.28 |
+| `destination_rarity` | estate-wide prevalence, the same curve beaconing uses | 0.24 |
+| `novelty` | share of the host's window elapsed before it first reached this destination | 0.18 |
+
+### The corpus
+
+`EgressCorpusGenerator`, seeded, separate from the beaconing corpus in section
+1 — adding traffic to that one would have invalidated results this document
+calls reproducible. Twelve hosts, 12,251 flows over 24 hours, 125 distinct
+source→destination pairs.
+
+The benign traffic is not filler. Three of its four categories are
+indistinguishable from exfiltration on volume and direction alone:
+
+| Benign category | Per host | Direction | Why it is hard |
+|---|---|---|---|
+| Nightly backup | ~2.1 GB in 24 flows | 99.8% outbound | Large, outbound, scheduled — three of the four things exfiltration is |
+| Cloud sync | ~310 MB in 140 flows | 99% outbound | Same, reached by the whole estate |
+| Software mirror | ~2.4 GB in 20 flows | 99.8% **inbound** | Same volume, travelling the other way |
+| Browsing | 6 destinations, ~150 KB each | inbound-heavy | Every host reaches addresses nobody else does |
+
+Plus one deliberate trap, described below.
+
+### Result
+
+```
+precision 0.800 · recall 1.000 · f1 0.889      (4 TP · 1 FP · 0 FN)
+12,251 records → 5 findings in 0.06s           (189,000 rec/s, x86_64, 4 cores)
+```
+
+| Planted transfer | Volume | Flows | Appears at | Predicate | Score |
+|---|---|---|---|---|---|
+| `bulk-single-archive` | 800 MB | 3 | 70% in | `exfiltrates_to` | **0.946** |
+| `slow-and-small` | 12 MB | 40 | 55% in | `exfiltrates_to` | **0.899** |
+| `staged-chunked` | 600 MB | 120 | 40% in | `exfiltrates_to` | **0.851** |
+| `trickle-upload` | 600 KB | 25 | 62% in | `contacts_rare_destination` | **0.704** |
+
+The last one is 600 KB, below the megabyte floor for a volume claim, so the
+strongest thing sayable about it is that something went somewhere rare — and
+that is what it says, at LOW. It counts as found because it was found; scoring
+it a miss would penalise the analyzer for not overstating what it measured.
+
+And the decoys, scored with the thresholds removed so the separation is
+visible rather than inferred from silence:
+
+| Benign category | Instances | Median score | Threshold it had to clear |
+|---|---|---|---|
+| Software mirror | 12 | 0.098 | 0.45 |
+| Cloud sync | 12 | 0.340 | 0.45 |
+| Nightly backup | 12 | 0.360 | 0.45 |
+| Lone-host backup | 1 | **0.485** | 0.45 — **fires** |
+
+Thirty-six of the thirty-seven hard decoys are silent, and the 72 browsing
+destinations with them. The nightly backups clear the highest bar in the
+corpus on volume and direction and still land at 0.36, because a backup target
+is reached by the whole estate and was already in use when the sensor started
+recording. That is rule 5 doing its job: under an arithmetic mean the backups
+would score 0.65 and flood the queue.
+
+### The one false positive is the one that cannot be fixed here
+
+`10.0.2.13 → 10.0.2.61`, at 0.485 against a 0.45 threshold. It is a backup
+target used by exactly one machine, and it is in the corpus on purpose.
+
+Estate-wide rarity scores it 1.0 because the score is right: one host, one
+destination, nobody else. Novelty is what holds it to MEDIUM rather than
+CRITICAL — the destination has been in use since the capture opened — but
+nothing available to this analyzer can take it to zero, because nothing in the
+telemetry says "backup server". This is the gap section 8 already records as
+open: **the estate has no identity.** An asset inventory demotes it in one
+step, and `AnalysisContext.ip_to_host` exists for exactly that.
+
+The margin is 0.035, which is thin. It is not widened by moving the threshold:
+with no real corpus, tuning it would mean calibrating against a generator
+written by the same hand as the detector — the error section 3 documents. A
+test pins the false-positive *count* at one instead, so a regression that
+starts reporting backups is a failing test rather than a quiet flood.
+
+### NetFlow has no direction, and the obvious default deletes every detection
+
+This is the trap the roadmap names, and it is worth the space because the
+failing version emits no error and reads as a quiet network.
+
+`ingest/netflow.py` records total flow bytes as `orig_bytes` — a NetFlow
+record carries no directional split — so there is no `resp_bytes` column at
+all. The egress ratio is *unavailable*, which is not zero and not 0.5. Run
+against the same corpus with the responder column removed:
+
+| Telemetry | Ratio handling | Planted transfers found | Top score |
+|---|---|---|---|
+| Zeek `conn.log` | measured | **4 of 4** | 0.946 |
+| NetFlow-shaped | **omitted**, weights renormalise | **4 of 4** | 0.923 |
+| NetFlow-shaped | defaulted to 0.5 ("neutral") | **0 of 4** | — |
+| NetFlow-shaped | defaulted to 1.0 ("it's all we have") | 4 of 4 | 0.946 |
+
+Omitting the component costs 0.02 to 0.06 of score as the remaining weights
+redistribute, and finds everything. Substituting a neutral 0.5 scores the
+component at zero, and under a geometric mean that is enough to sink every
+finding in the capture — **detection goes to nothing, silently.**
+
+The fourth row is the more instructive one. Defaulting to 1.0 produces results
+identical to the sensor that actually measured direction, so it would pass
+every test in this table and look like the right answer. It is not: it asserts
+that every byte went outbound on telemetry that never observed a direction,
+and the first capture where that is false is the one where it invents an
+exfiltration. A default that happens to look right is more dangerous than one
+that looks wrong. The component is omitted, the evidence payload carries
+`egress_ratio: null`, and the basis line on every affected finding names the
+omission.
+
+The demotion in that second row is worth noting too: with direction
+unobservable, the lone-host backup falls out of the volume band into
+`contacts_rare_destination` at LOW. Less telemetry produces a weaker claim
+rather than the same claim with a worse number.
+
+### What is not measured
+
+**Thresholds.** `min_bytes` (1 MB), `rare_min_bytes` (100 KB),
+`exfil_threshold` (0.70), `volume_threshold` (0.45) and
+`rare_score_threshold` (0.30) are set from the shape of the problem, not from
+a measurement. They are the numbers a real capture would move.
+
+**Alert burden on a real estate.** `contacts_rare_destination` is the
+predicate the roadmap flags as a flood waiting to happen, and the corpus
+proves the flood is real: without its score threshold, prevalence alone marks
+72 browsing destinations as rare and the analyzer emits one finding each at
+confidences around 0.03. Gated, it emits one. Whether that holds on a
+university network with a hundred thousand destinations is not something
+twelve synthetic hosts can answer. It is also in
+`CorrelationConfig.non_corroborating`, so however many it emits, it can
+enrich an incident other evidence created but never create or promote one.
+
+**CTU-13.** The analyzer is wired into `voidai bench --real` and runs
+alongside beaconing and fan-out on the real-capture path, where NetFlow
+exercises the omission rule above on real traffic. **It has not been run**:
+the corpus was not reachable from the environment this work was done in.
+Until it is, this section claims a detector that works on traffic built to the
+same beliefs as the detector, and nothing more.
+
+The CTU-13 figures in section 2 predate this analyzer — they were measured
+with beaconing and fan-out only. Adding a third analyzer changes the finding
+count, the incident count and possibly the queue ranks, so those numbers are
+due a re-measurement rather than an update in place.
+
+---
+
+## 8. What is still open
+
+**Corroboration is broad but shallow on real data.** Five analyzers now
+exist, and multi-way corroboration ranks correctly on synthetic traffic. But
+CTU-13 carries neither DNS query names nor alerts, so on the real captures the
+signal is still only two-valued. Closing that needs a capture with network,
+DNS and alert telemetry together — which is a data problem, not a code one.
+
+**Volume and egress has no real half at all.** Section 7 reports it in full
+and reports nothing from a real capture, because CTU-13 was not reachable from
+the environment the analyzer was written in. It is wired into
+`voidai bench --real` and waiting.
 
 **The estate has no identity.** VoidAI does not know which of its hosts is a
 mail relay, a resolver, or a domain controller. `147.32.84.229` ranks first on
 scenario 3 because it reaches 162,612 destinations, which is exactly what a
-gateway does. An asset inventory would demote it in one step, and the
-`AnalysisContext` already carries `ip_to_host` for exactly this.
+gateway does. The volume analyzer meets the same wall from the other side: its
+single false positive is a backup target that exactly one machine uses, which
+no signal available to it can distinguish from a private drop box. An asset
+inventory would demote both in one step, and the `AnalysisContext` already
+carries `ip_to_host` for exactly this.
 
 **Memory headroom on the largest capture.** 2,672 MB does fit a 4GB board —
 measured, section 3 — but with roughly 1.1 GB spare rather than a wide margin.
@@ -425,7 +613,7 @@ Windowing pass 1 would lower it further.
 
 ---
 
-## 8. Energy
+## 9. Energy
 
 Every figure on this page was produced on x86_64 with **estimated** energy —
 this container exposes no RAPL counters, and the fallback profile deliberately
@@ -438,10 +626,11 @@ verified.
 
 ---
 
-## 9. Reproducing
+## 10. Reproducing
 
 ```bash
-# Synthetic — no download required
+# Synthetic — no download required. Prints two tables: beaconing (section 1)
+# and volume-and-egress (section 7), scored against separate corpora.
 voidai bench
 
 # CTU-13 scenario 6 (245MB) and scenario 3 (1.4GB)

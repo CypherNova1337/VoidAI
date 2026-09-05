@@ -81,6 +81,7 @@ the model's job.**
 |---|---|---|
 | **C2 Beaconing Analyzer** | Six-signal ensemble: interval regularity, schedule-floor tightness, payload uniformity, adaptive-bin autocorrelation, coverage, estate-wide destination rarity — over burst-coalesced arrivals | **working** |
 | **Fan-out / Scan Detector** | Destination breadth against revisit rate, per port | **working** |
+| **Volume & Egress Analyzer** | Egress ratio, robust volume deviation against the host's own baseline, estate-wide destination rarity, destination novelty | **working** ³ |
 | **Correlation & ranking** | Findings → per-host incidents, ordered by noisy-OR across independent behaviours | **working** |
 | **Language layer** | Token-budgeted evidence brief → grammar-constrained small model → claim verifier | **working** |
 | **DNS Tunnelling Detector** | Label entropy, subdomain cardinality, query length, qtype skew | **working** ¹ |
@@ -99,6 +100,17 @@ fire on real tunnels. The difference is recorded rather than blurred.
 ² Synthetic validation. The Stratosphere captures carry NetFlow and
 passivedns but no EVE output, so no real alert stream was reachable.
 
+³ **Synthetic on both halves, and no CTU-13 figure is claimed** — the corpus
+was not reachable from the environment this analyzer was written in. Against a
+seeded corpus whose benign traffic is a nightly backup, a cloud sync and a
+software mirror — large, outbound and scheduled, which is three of the four
+things exfiltration is — it finds 4 of 4 planted transfers with one false
+positive, on a backup target only one machine uses. The analyzer is wired into
+`voidai bench --real` and waiting for the real half. See
+[`docs/benchmarks.md`](docs/benchmarks.md) §7, which also records what happens
+when the one measurement NetFlow cannot supply is *defaulted* rather than
+omitted: detection drops from 4 of 4 to zero, silently.
+
 ### Measured, on real malware traffic
 
 Validated against [CTU-13](https://www.stratosphereips.org/datasets-ctu13) —
@@ -112,6 +124,10 @@ real botnet captures on a university network, with per-flow ground truth.
 | Corroborated incidents | 3 | 1 |
 | Throughput | 224k rec/s | 219k rec/s |
 | Peak RSS | 2.6 GB | 0.6 GB |
+
+Measured with beaconing and fan-out. The volume-and-egress analyzer now runs
+on this path too and these figures predate it, so they are due a
+re-measurement rather than an adjustment by reasoning.
 
 Reproduce with `voidai bench` and `voidai bench --real <capture>`.
 

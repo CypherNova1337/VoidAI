@@ -273,6 +273,31 @@ def coalesce_bursts(
     return starts, totals
 
 
+def robust_deviation(value: float, baseline: np.ndarray) -> float | None:
+    """How far `value` sits from a baseline, in robust standard deviations.
+
+    The modified z-score, `(value - median) / (1.4826 * MAD)`. The constant
+    rescales MAD onto the standard deviation of a normal distribution, so the
+    result reads on the familiar sigma scale while keeping MAD's 50% breakdown
+    point — which matters here, because the baseline this is measured against
+    is a host's own byte volumes and those are heavy-tailed by nature.
+
+    Returns `None` — not zero — when the baseline cannot support an estimate:
+    fewer than three samples, or a MAD of zero because the samples are
+    identical. The distinction is the same one `autocorrelation_at_period`
+    draws. An unmeasurable deviation has to be dropped from a score and its
+    weight redistributed, whereas a zero asserts that the value is *typical*,
+    which is a different claim and an unearned one.
+    """
+    if baseline.size < 3:
+        return None
+    median = float(np.median(baseline))
+    mad = median_absolute_deviation(baseline)
+    if mad < _EPS:
+        return None
+    return (value - median) / (1.4826 * mad)
+
+
 def destination_rarity(contacting_hosts: int) -> float:
     """Prior on a destination being adversary infrastructure, from prevalence.
 

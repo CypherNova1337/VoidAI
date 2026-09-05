@@ -14,12 +14,19 @@ from voidai.analyzers.dnstunnel import (
     DnsTunnelScore,
     score_zone,
 )
+from voidai.analyzers.egress import (
+    EgressAnalyzer,
+    EgressConfig,
+    EgressScore,
+    score_transfer,
+)
 from voidai.analyzers.fanout import FanoutAnalyzer, FanoutConfig, FanoutScore, score_fanout
 
 #: Analyzers run by `voidai run` unless a subset is requested.
 DEFAULT_ANALYZERS: tuple[type[BaseAnalyzer], ...] = (
     BeaconingAnalyzer,
     FanoutAnalyzer,
+    EgressAnalyzer,
     DnsTunnelAnalyzer,
     AlertTriageAnalyzer,
 )
@@ -38,11 +45,15 @@ __all__ = [
     "DnsTunnelAnalyzer",
     "DnsTunnelConfig",
     "DnsTunnelScore",
+    "EgressAnalyzer",
+    "EgressConfig",
+    "EgressScore",
     "FanoutAnalyzer",
     "FanoutConfig",
     "FanoutScore",
     "score_alert_cluster",
     "score_fanout",
     "score_pair",
+    "score_transfer",
     "score_zone",
 ]
