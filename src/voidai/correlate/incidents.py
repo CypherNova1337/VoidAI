@@ -86,12 +86,30 @@ class CorrelationConfig:
     #: finding at all. On scenario 6 the bot's incident keeps its volume
     #: finding and still ranks 1, which is the shape wanted: evidence
     #: retained, false promotion removed.
+    #:
+    #: `presents_rare_tls_fingerprint` is the one member that is *not* here
+    #: for partial evidence. A rare JA3 is complete evidence of exactly what
+    #: it claims. It is excluded because of what corroboration counts:
+    #: independent **behaviours of a host**. An implant beaconing over TLS
+    #: earns a beaconing finding and a rare-fingerprint finding from the same
+    #: connection — one behaviour measured twice, and multiplying a host's
+    #: priority for it would reward the analyzer for looking at the traffic
+    #: twice. It is also a single prevalence signal, which is the reason
+    #: `contacts_rare_destination` sits here. Confirmatory evidence still
+    #: raises the incident's combined confidence through the noisy-OR, which
+    #: is where confirmation belongs.
+    #:
+    #: `resolves_algorithmic_domain` is deliberately **not** in this set. A
+    #: host running a domain generation algorithm is doing a second thing,
+    #: not describing the first one differently, and the conjunction of a DGA
+    #: and a beacon is exactly what the multiplier exists to surface.
     non_corroborating: frozenset[Predicate] = frozenset(
         {
             Predicate.SHARES_INFRASTRUCTURE_WITH,
             Predicate.PRECEDES,
             Predicate.CONTACTS_RARE_DESTINATION,
             Predicate.TRANSFERS_ANOMALOUS_VOLUME,
+            Predicate.PRESENTS_RARE_TLS_FINGERPRINT,
         }
     )
 

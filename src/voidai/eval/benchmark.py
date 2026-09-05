@@ -17,14 +17,24 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from voidai.analyzers import AnalysisContext, BeaconingAnalyzer, EgressAnalyzer
+from voidai.analyzers import (
+    AnalysisContext,
+    BeaconingAnalyzer,
+    EgressAnalyzer,
+    TlsDgaAnalyzer,
+)
 from voidai.eval.synth import (
     Corpus,
     CorpusGenerator,
+    DgaCorpus,
+    DgaCorpusGenerator,
     EgressCorpus,
     EgressCorpusGenerator,
+    TlsCorpus,
+    TlsCorpusGenerator,
+    write_zeek_ssl_log,
 )
-from voidai.ingest.zeek import read_conn_log
+from voidai.ingest.zeek import read_conn_log, read_ssl_log
 from voidai.lexicon import Finding
 from voidai.telemetry import EnergyMeter, RunReceipt
 
@@ -206,6 +216,158 @@ def run_egress_benchmark(
 
     return EgressBenchmarkResult(
         detection=score_egress(findings, corpus),
+        receipt=receipt,
+        findings=findings,
+        corpus=corpus,
+    )
+
+
+@dataclass
+class DgaBenchmarkResult:
+    """Outcome of the domain-generation benchmark.
+
+    Its own corpus and its own score, like the egress result above. The DGA
+    half and the TLS half are also kept apart from each other, because one is
+    validated against a real corpus for specificity and the other is not
+    validated against real data at all — averaging them would produce a number
+    whose provenance nobody could state.
+    """
+
+    detection: DetectionScore
+    receipt: RunReceipt
+    findings: list[Finding]
+    corpus: DgaCorpus
+
+
+@dataclass
+class TlsBenchmarkResult:
+    detection: DetectionScore
+    receipt: RunReceipt
+    findings: list[Finding]
+    corpus: TlsCorpus
+
+
+def score_dga(findings: list[Finding], corpus: DgaCorpus) -> DetectionScore:
+    """Match findings to planted generation families.
+
+    Scored **per family, not per domain**. A family is a few hundred names and
+    the analyzer reports a handful of exemplars by design, so counting domains
+    would measure the exemplar cap rather than the detection: naming three of
+    two hundred generated names has found the family, and naming two hundred
+    would be the alert flood the cap exists to prevent.
+
+    The dictionary-concatenation family is counted as a **miss**, not excluded.
+    It is a real DGA family that this analyzer's character model cannot see —
+    `analyzers/ngrams.py` explains why — and dropping it from the denominator
+    would turn a documented limitation into a better-looking recall figure.
+    """
+    score = DetectionScore()
+    matched: set[str] = set()
+
+    for finding in findings:
+        source, domain = _finding_endpoints(finding)
+        family = corpus.family_of(source, domain)
+        if family is not None:
+            if family.label not in matched:
+                score.true_positives += 1
+                matched.add(family.label)
+        else:
+            decoy = corpus.decoys.get((source, domain), "unlabelled")
+            score.false_positives += 1
+            score.false_positive_pairs.append(f"{source} -> {domain} ({decoy})")
+
+    for family in corpus.families:
+        if family.label in matched:
+            continue
+        score.false_negatives += 1
+        score.missed_labels.append(
+            family.label
+            if family.detectable
+            else f"{family.label} (known limitation: dictionary generators)"
+        )
+
+    return score
+
+
+def score_tls(findings: list[Finding], corpus: TlsCorpus) -> DetectionScore:
+    """Match findings to planted rare clients by (host, fingerprint)."""
+    score = DetectionScore()
+    truth = {client.key: client for client in corpus.clients}
+    matched: set[tuple[str, str]] = set()
+
+    for finding in findings:
+        pair = _finding_endpoints(finding)
+        if pair in truth:
+            score.true_positives += 1
+            matched.add(pair)
+        else:
+            decoy = corpus.decoys.get(pair, "unlabelled")
+            score.false_positives += 1
+            score.false_positive_pairs.append(f"{pair[0]} presenting {pair[1]} ({decoy})")
+
+    for pair, client in truth.items():
+        if pair not in matched:
+            score.false_negatives += 1
+            score.missed_labels.append(client.label)
+
+    return score
+
+
+def run_dga_benchmark(seed: int = 1337, hours: float = 6.0) -> DgaBenchmarkResult:
+    """Score the DGA half against a seeded corpus of generation families.
+
+    The DNS frame is passed in memory rather than written to a `dns.log` and
+    read back, unlike the connection benchmarks. `read_dns_log` is already
+    covered by the tunnelling tests against a real capture, and what is under
+    test here is a response-code path that the passivedns parser cannot
+    produce at all.
+    """
+    corpus = DgaCorpusGenerator(seed=seed).generate(hours=hours)
+    receipt = RunReceipt()
+
+    with EnergyMeter() as meter:
+        findings = TlsDgaAnalyzer().analyze(AnalysisContext(dns=corpus.queries))
+
+    receipt.records_ingested = corpus.queries.height
+    receipt.findings_emitted = len(findings)
+    receipt.finalize(meter.reading)
+
+    return DgaBenchmarkResult(
+        detection=score_dga(findings, corpus),
+        receipt=receipt,
+        findings=findings,
+        corpus=corpus,
+    )
+
+
+def run_tls_benchmark(
+    seed: int = 1337,
+    workdir: Path | None = None,
+) -> TlsBenchmarkResult:
+    """Score the TLS half, through a real `ssl.log` on disk.
+
+    Through the file rather than the frame, for the reason `run_benchmark`
+    gives: the `ja3` column arrives from a Zeek package and `established`
+    arrives as the literal `T`, and a benchmark that skips the parser could
+    not catch either going wrong.
+    """
+    corpus = TlsCorpusGenerator(seed=seed).generate()
+    receipt = RunReceipt()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(workdir) if workdir else Path(tmp)
+        log_path = write_zeek_ssl_log(corpus.sessions, directory / "ssl.log")
+
+        with EnergyMeter() as meter:
+            sessions = read_ssl_log(log_path)
+            findings = TlsDgaAnalyzer().analyze(AnalysisContext(ssl=sessions))
+
+    receipt.records_ingested = sessions.height
+    receipt.findings_emitted = len(findings)
+    receipt.finalize(meter.reading)
+
+    return TlsBenchmarkResult(
+        detection=score_tls(findings, corpus),
         receipt=receipt,
         findings=findings,
         corpus=corpus,

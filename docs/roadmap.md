@@ -1,15 +1,15 @@
 # Roadmap — filling in the Lexicon
 
-Eighteen predicates are declared. Nine have an analyzer that emits them. The
+Eighteen predicates are declared. Eleven have an analyzer that emits them. The
 vocabulary is ahead of the code on purpose: the grammar was written for the
-system VoidAI is meant to become, and the remaining nine predicates are the
+system VoidAI is meant to become, and the remaining seven predicates are the
 work list.
 
 ```
-18 predicates declared · 6 analyzers built · 9 predicates unclaimed
+18 predicates declared · 7 analyzers built · 7 predicates unclaimed
 ```
 
-This document is the plan for the other nine. Each section is a self-contained
+This document is the plan for the rest. Each section is a self-contained
 unit of work sized to one branch, and they are ordered by ratio of value
 to lift. **Take one. Do not take two.**
 
@@ -261,6 +261,22 @@ to isolate the cut, and assert the floor separately.
 
 ## 3 · TLS and DGA — `analyzer-tlsdga`
 
+> **Done.** `src/voidai/analyzers/tlsdga.py` and
+> `src/voidai/analyzers/ngrams.py`, plus an `ssl.log` parser, registered,
+> wired into `voidai demo`, `voidai bench` and `voidai doctor --telemetry`,
+> and covered by 58 tests. DGA specificity is **real** — zero findings across
+> `tests/data/real.passivedns`, measured without its heaviest component
+> because that corpus carries no `rcode`. DGA sensitivity is **synthetic**:
+> 3 of 4 planted families, the fourth a dictionary generator counted as a
+> miss rather than excluded. TLS fingerprint rarity is **synthetic on both
+> sides** — no openly-licensed `ssl.log` carrying JA3 was reachable.
+> `docs/benchmarks.md` §9 has the account.
+>
+> **The first line below is wrong, and that is the cluster's main finding.**
+> It does not reuse the entropy machinery, because entropy does not work at
+> second-level-label length — read §9 before the signal table. Everything
+> below stands as the record of what was planned.
+
 Reuses most of the entropy machinery already written for DNS tunnelling.
 
 **Claims** `resolves_algorithmic_domain` (medium) · `presents_rare_tls_fingerprint` (medium)
@@ -303,6 +319,68 @@ Public DGA name lists give real sensitivity for the domain-generation half.
 Specificity comes from the existing real passivedns corpus. TLS fingerprint
 rarity is synthetic only unless a real `ssl.log` corpus turns up — say which is
 which.
+
+### What it cost, for whoever takes the next one
+
+**The prescribed signal was measured and removed.** `label_entropy` at 0.26
+was the second-heaviest component in the table above. Per-character Shannon
+entropy is bounded by `log2(len)`, and a second-level label is 6 to 20
+characters, so it measures length rather than randomness: real labels average
+0.855 of their maximum against 0.893 for random strings — and 0.807 for hex,
+which means the component scores an encoded family as *more natural* than
+`googleapis`. It was replaced by a bigram model, not down-weighted. Rules 5
+and 6 are about what a component may claim; this is the prior question of
+whether it measures anything, and the table above did not settle it.
+
+**An embedded table of hand-written frequencies would have been fabricated
+precision.** The plan said "a small embedded table of real domain bigrams".
+1,369 letter-pair probabilities written from memory are three significant
+figures of invention. `ngrams.py` embeds 1,233 ordinary English words and
+derives the table from them at import — a datum that can be checked by eye,
+and arithmetic on top of it. Brand names are excluded because the corpus that
+measures specificity is full of them, and a model fitted to its own validation
+set measures nothing.
+
+**A synthetic corpus that cannot choose between two settings has validated
+neither.** Every threshold from 0.35 to 0.85 gives identical results on
+`DgaCorpusGenerator`. The real fixture is what set it, and the real decoys
+turned out to be 0.2 harder than the synthetic ones written to imitate them —
+`crwdcntrl.net` reaches 0.546 where the generator's abbreviations top out at
+0.337. Expect the generator you write to be gentler than the traffic.
+
+**Rule 6's second level went the other way here, and that is not a
+contradiction.** Cluster 1 lost the verb when `resp_bytes` went missing,
+because `exfiltrates_to` *means* outbound. Cluster 3 keeps the verb when
+`rcode` goes missing, because `resolves_algorithmic_domain` means structurally
+generated and structure is still measured. The rule is not "a missing
+component downgrades the claim". It is: read what the verb asserts, and check
+whether the telemetry still supports that particular assertion. One predicate
+at a time.
+
+**Determinism is not free once findings are capped.** A generation family
+mints hundreds of names scoring an identical 1.0 and only three are reported,
+so the tie-break decides which — and with no total order it fell through to
+`group_by` ordering, which Polars does not promise to keep stable. Two runs on
+one capture produced different content-addressed finding IDs. Anything that
+takes a top-N of equal scores needs a total order; and this was caught by
+printing the findings twice, which cluster 2 also recommends and which is
+still the highest-yield thing to do before writing tests.
+
+**Profile before optimising, and then again.** The obvious cost was the
+per-row `map_elements` public-suffix reduction. Vectorising it moved a
+1.1M-record run from 32k to 34k records/second — noise. The real costs were
+scalar `np.clip` inside the scoring loop and an uncached character model, and
+fixing those gave 60k. The same `np.clip` pattern is in
+`statistics.weighted_geometric_mean`, where it is shared by every analyzer
+here and is worth more than any one cluster.
+
+**Two small things that are not this cluster's, and were done anyway because
+nothing worked without them.** `read_dns_log` now prefers Zeek's textual
+`rcode_name`/`qtype_name` over the numeric columns, so an evidence payload
+says `NXDOMAIN` rather than `"3"`. And `registered_domain_expr` sits beside
+`registered_domain` in `dnstunnel.py`, with a test asserting the two agree
+over the real capture — two public-suffix rules that disagreed would split one
+zone two ways in two analyzers.
 
 ---
 
@@ -469,7 +547,7 @@ vendoring.
 |---|---|---|---|
 | 1 | Volume and egress | Low | **Done** — and it rewrote rule 6; see the section |
 | 2 | Threat intel | Low | **Done** — and rule 6 had to be re-derived without weights; see the section |
-| 3 | TLS and DGA | Medium | Small parser; reuses existing entropy work |
+| 3 | TLS and DGA | Medium | **Done** — and entropy turned out not to work at this length; see the section |
 | 4 | Temporal ordering | Low | No parser at all; markedly improves the narrative |
 | 5 | Host and endpoint | High | Biggest corroboration payoff, biggest lift — split it up |
 | 6 | Web | Medium | Least novel; do last, or not at all |

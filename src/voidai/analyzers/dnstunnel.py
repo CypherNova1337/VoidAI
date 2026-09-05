@@ -82,6 +82,38 @@ def registered_domain(name: str) -> str:
     return ".".join(labels[-2:])
 
 
+def registered_domain_expr(column: str = "query") -> pl.Expr:
+    """`registered_domain` as a Polars expression, over a column of names.
+
+    Same rule, same suffix table, no Python call per row, and it keeps the
+    reduction inside the columnar path where the DGA analyzer needs it over
+    every query in a capture.
+
+    Worth knowing what it is *not* worth: replacing `map_elements` with this
+    moved a 1.1M-record run from 32k to 34k records/second, which is noise.
+    The interpreter call per row was the obvious suspect and was not the
+    bottleneck — that turned out to be scalar `np.clip` and an uncached
+    character model, both in `tlsdga.py`, together worth 32k to 60k. The
+    expression stays because it is the right shape for a streaming pass, not
+    because it bought the speed.
+
+    Kept here, beside the function it mirrors, so the two cannot drift onto
+    different suffix tables. `test_dnstunnel.py` asserts they agree, over the
+    real capture as well as the edge cases.
+    """
+    labels = pl.col(column).str.strip_chars(".").str.to_lowercase().str.split(".")
+    count = labels.list.len()
+    last_two = labels.list.slice(-2).list.join(".")
+    last_three = labels.list.slice(-3).list.join(".")
+    return (
+        pl.when(count <= 2)
+        .then(labels.list.join("."))
+        .when((count >= 3) & last_two.is_in(list(_MULTIPART_SUFFIXES)))
+        .then(last_three)
+        .otherwise(last_two)
+    )
+
+
 def subdomain_of(name: str, zone: str) -> str:
     """The part of a query name left of its zone, with dots removed.
 

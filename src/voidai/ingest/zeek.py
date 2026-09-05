@@ -20,6 +20,7 @@ import polars as pl
 from voidai.ingest.schema import (
     CONNECTION_SCHEMA,
     DNS_SCHEMA,
+    SSL_SCHEMA,
     conform,
     empty,
 )
@@ -114,7 +115,20 @@ def read_conn_log(path: str | Path) -> pl.DataFrame:
 
 
 def read_dns_log(path: str | Path) -> pl.DataFrame:
-    """Parse a Zeek `dns.log` into the normalised DNS schema."""
+    """Parse a Zeek `dns.log` into the normalised DNS schema.
+
+    Zeek writes the query type and response code twice: once numerically as
+    `qtype`/`rcode`, and once textually as `qtype_name`/`rcode_name`. The
+    normalised schema keeps one column of each, as text, and the *textual*
+    one wins where both are present.
+
+    Not an aesthetic choice. `rcode` is the column the DGA analyzer reads to
+    measure how much of a family failed to resolve, and taking the numeric
+    one means every downstream comparison is against the string `"3"` — a
+    value that carries no meaning to a reader of an evidence payload and that
+    silently becomes `"3.0"` if any row in the file is null and the column
+    infers as a float.
+    """
     path = Path(path)
     frame = _read_zeek(path)
     if frame.is_empty():
@@ -126,11 +140,54 @@ def read_dns_log(path: str | Path) -> pl.DataFrame:
     }
     frame = frame.rename({k: v for k, v in renames.items() if k in frame.columns})
 
+    for textual, normalised in (("qtype_name", "qtype"), ("rcode_name", "rcode")):
+        if textual in frame.columns:
+            frame = frame.drop(normalised, strict=False).rename({textual: normalised})
+
     if "answers" in frame.columns and frame.schema["answers"] == pl.List(pl.Utf8):
         frame = frame.with_columns(pl.col("answers").list.join(";"))
 
     frame = frame.with_columns(pl.lit(str(path)).alias("source_file"))
     return conform(frame, DNS_SCHEMA)
+
+
+def read_ssl_log(path: str | Path) -> pl.DataFrame:
+    """Parse a Zeek `ssl.log` into the normalised TLS schema.
+
+    The columns that make this log worth reading — `ja3` and `ja3s` — are
+    written by a Zeek *package*, not by the core script. A stock sensor emits
+    an `ssl.log` with everything except the fingerprints, and `conform` turns
+    that absence into a null column rather than an error, so the pipeline
+    survives it and the analyzer decides what can still be said. See
+    `voidai doctor --telemetry`, which reports the distinction an operator
+    cannot otherwise see: an ssl.log that was read but carries no fingerprints
+    looks exactly like no ssl.log at all from the outside.
+    """
+    path = Path(path)
+    frame = _read_zeek(path)
+    if frame.is_empty():
+        return empty(SSL_SCHEMA)
+
+    renames = {
+        "id.orig_h": "src_ip",
+        "id.orig_p": "src_port",
+        "id.resp_h": "dst_ip",
+        "id.resp_p": "dst_port",
+    }
+    frame = frame.rename({k: v for k, v in renames.items() if k in frame.columns})
+
+    # TSV mode writes booleans as the literal strings `T` and `F`, which cast
+    # to null rather than to False. Mapped explicitly so an `established`
+    # column read from TSV means the same thing as one read from JSON.
+    if "established" in frame.columns and frame.schema["established"] == pl.Utf8:
+        frame = frame.with_columns(
+            pl.col("established")
+            .str.to_uppercase()
+            .replace_strict({"T": True, "F": False}, default=None, return_dtype=pl.Boolean)
+        )
+
+    frame = frame.with_columns(pl.lit(str(path)).alias("source_file"))
+    return conform(frame, SSL_SCHEMA)
 
 
 def discover(directory: str | Path) -> dict[str, list[Path]]:
@@ -170,4 +227,13 @@ def load_dns(directory: str | Path) -> pl.DataFrame:
     frames = [f for f in frames if not f.is_empty()]
     if not frames:
         return empty(DNS_SCHEMA)
+    return pl.concat(frames, how="vertical").sort("ts")
+
+
+def load_ssl(directory: str | Path) -> pl.DataFrame:
+    """Load and concatenate every TLS log found under a directory."""
+    frames = [read_ssl_log(p) for p in discover(directory).get("ssl", [])]
+    frames = [f for f in frames if not f.is_empty()]
+    if not frames:
+        return empty(SSL_SCHEMA)
     return pl.concat(frames, how="vertical").sort("ts")

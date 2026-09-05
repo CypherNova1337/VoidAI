@@ -27,6 +27,15 @@ from voidai.analyzers.intel import (
     ThreatIntelAnalyzer,
     score_match,
 )
+from voidai.analyzers.ngrams import improbability, mean_surprise
+from voidai.analyzers.tlsdga import (
+    DgaScore,
+    TlsDgaAnalyzer,
+    TlsDgaConfig,
+    TlsScore,
+    score_domain,
+    score_fingerprint,
+)
 
 #: Analyzers run by `voidai run` unless a subset is requested.
 DEFAULT_ANALYZERS: tuple[type[BaseAnalyzer], ...] = (
@@ -36,6 +45,7 @@ DEFAULT_ANALYZERS: tuple[type[BaseAnalyzer], ...] = (
     DnsTunnelAnalyzer,
     AlertTriageAnalyzer,
     ThreatIntelAnalyzer,
+    TlsDgaAnalyzer,
 )
 
 __all__ = [
@@ -49,6 +59,7 @@ __all__ = [
     "BeaconScore",
     "BeaconingAnalyzer",
     "BeaconingConfig",
+    "DgaScore",
     "DnsTunnelAnalyzer",
     "DnsTunnelConfig",
     "DnsTunnelScore",
@@ -61,8 +72,15 @@ __all__ = [
     "IntelConfig",
     "IntelScore",
     "ThreatIntelAnalyzer",
+    "TlsDgaAnalyzer",
+    "TlsDgaConfig",
+    "TlsScore",
+    "improbability",
+    "mean_surprise",
     "score_alert_cluster",
+    "score_domain",
     "score_fanout",
+    "score_fingerprint",
     "score_match",
     "score_pair",
     "score_transfer",

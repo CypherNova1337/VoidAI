@@ -88,6 +88,9 @@ the model's job.**
 | **PassiveDNS / Zeek DNS / EVE ingest** | Real query names and Suricata alerts | **working** |
 | **Suricata Alert Triage** | Deduplication, estate-wide signature rarity, category weighting | **working** ² |
 | **Threat Intel Matcher** | Local IOC files joined to addresses, netblocks and DNS names; confidence from feed provenance and indicator age, never from traffic volume | **working** ⁴ |
+| **DGA Detector** | Per-family NXDOMAIN rate, bigram improbability against an embedded English character model, digit and consonant structure | **working** ⁵ |
+| **TLS Fingerprint Rarity** | Estate-wide JA3 prevalence, weighted by how much estate the rarity was measured over | **working** ⁶ |
+| **Zeek ssl.log ingest** | TLS sessions and JA3/JA3S client fingerprints | **working** |
 | **Hunt Query Generator** | Ranked incident → Sigma / KQL / SPL / Zeek, by templating, no model | **working** |
 | **Web Attack Detector** | Signature + statistical hybrid over access logs | planned |
 
@@ -128,6 +131,39 @@ runtime, ever: IOC sets are files the operator places on disk, and
 `tests/test_offline.py` severs sockets and asserts the pipeline still
 completes. Format and scoring in [`docs/ioc.md`](docs/ioc.md);
 [`docs/benchmarks.md`](docs/benchmarks.md) §8 for what is and is not measured.
+
+⁵ **Specificity real, sensitivity synthetic.** Zero findings across the real
+passivedns corpus — and measured *without* its heaviest component, since that
+capture records no `rcode`, which makes the result conservative rather than
+optimistic. The closest real name is `crwdcntrl.net` at 0.546 against a 0.65
+threshold, a margin pinned by a test. True positives are synthetic: 3 of 4
+planted families, the fourth a **dictionary generator counted as a miss**
+rather than dropped from the denominator, because a family built from
+concatenated words is more English than English and this model cannot see it.
+Public DGA feeds exist but none was vendored — nothing is fetched, and no
+redistribution licence was verified.
+
+The component the plan called for is not in the list above, and that is the
+result worth reading: **Shannon entropy does not work at this length.** A
+second-level label is 6 to 20 characters, where per-character entropy is
+bounded by `log2(len)` and so measures length rather than randomness — real
+labels average 0.855 of their maximum against 0.893 for random strings, and
+0.807 for hex, which scores an encoded family as *more natural* than
+`googleapis`. It was measured, and removed.
+[`docs/benchmarks.md`](docs/benchmarks.md) §9.
+
+⁶ **Synthetic on both sides.** No openly-licensed `ssl.log` corpus carrying
+JA3 was reachable, so this measures the arithmetic and not the detector: 2 of
+2 planted implants, no false positive, against decoys that are the two ways a
+prevalence measure goes wrong — a fingerprint seen once, and one shared by two
+hosts. Its threshold was set after watching a decoy fire on a corpus written
+by the same hand as the detector; the rule it encodes — that two hosts need a
+larger estate to be unusual than one does — is the part to trust. JA3 comes
+from a Zeek package rather than the core script, so the column is often absent
+and `voidai doctor --telemetry` reports which of the three states a capture is
+in. A rare fingerprint is reported but **does not corroborate**: an implant
+beaconing over TLS earns a beaconing finding and a fingerprint finding from
+the same connection, which is one behaviour measured twice.
 
 ### Measured, on real malware traffic
 

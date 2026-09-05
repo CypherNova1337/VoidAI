@@ -13,7 +13,12 @@ import polars as pl
 import pytest
 
 from voidai.analyzers import AnalysisContext, DnsTunnelAnalyzer, DnsTunnelConfig
-from voidai.analyzers.dnstunnel import registered_domain, score_zone, subdomain_of
+from voidai.analyzers.dnstunnel import (
+    registered_domain,
+    registered_domain_expr,
+    score_zone,
+    subdomain_of,
+)
 from voidai.eval.synth import DnsCorpusGenerator
 from voidai.ingest.schema import DNS_SCHEMA, conform
 from voidai.lexicon import EntityType, Predicate
@@ -47,6 +52,49 @@ class TestRegisteredDomain:
 
     def test_empty(self) -> None:
         assert registered_domain("") == ""
+
+
+class TestRegisteredDomainExpr:
+    """The vectorised reduction must agree with the function, exactly.
+
+    Two public-suffix rules that disagree would split the same zone two ways
+    in two analyzers — the tunnelling analyzer would score `example.co.uk`
+    while the DGA analyzer scored `co.uk`, and the same capture would produce
+    two incompatible pictures of one estate.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "a1b2c3.tunnel.example.com",
+            "example.com",
+            "com",
+            "",
+            "a.b",
+            "deep.nested.sub.example.org",
+            "WWW.Example.COM",
+            "trailing.example.com.",
+            "data.tunnel.example.co.uk",
+            "example.co.uk",
+            "co.uk",
+            "shop.example.com.au",
+            "localhost",
+        ],
+    )
+    def test_agrees_with_the_function_on_edge_cases(self, name: str) -> None:
+        frame = pl.DataFrame({"query": [name]})
+        assert frame.select(registered_domain_expr()).item() == registered_domain(name)
+
+    def test_agrees_with_the_function_over_a_real_capture(self) -> None:
+        """The cases nobody thinks to parametrise: real DNS is stranger."""
+        from voidai.ingest.passivedns import read_passivedns
+
+        names = read_passivedns("tests/data/real.passivedns")["query"].drop_nulls().to_list()
+        assert len(names) > 300, "fixture did not load; the assertion would be vacuous"
+        vectorised = (
+            pl.DataFrame({"query": names}).select(registered_domain_expr()).to_series().to_list()
+        )
+        assert vectorised == [registered_domain(name) for name in names]
 
 
 class TestSubdomainOf:

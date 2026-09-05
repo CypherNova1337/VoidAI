@@ -545,7 +545,7 @@ Estate-wide rarity scores it 1.0 because the score is right: one host, one
 destination, nobody else. Novelty is what holds it to MEDIUM rather than
 CRITICAL — the destination has been in use since the capture opened — but
 nothing available to this analyzer can take it to zero, because nothing in the
-telemetry says "backup server". This is the gap section 9 already records as
+telemetry says "backup server". This is the gap section 10 already records as
 open: **the estate has no identity.** An asset inventory demotes it in one
 step, and `AnalysisContext.ip_to_host` exists for exactly that.
 
@@ -908,13 +908,308 @@ this branch.
 
 ---
 
-## 9. What is still open
+## 9. TLS and DGA — real specificity, synthetic sensitivity
 
-**Corroboration is broad but shallow on real data.** Six analyzers now exist,
-and multi-way corroboration ranks correctly on synthetic traffic. But CTU-13
-carries neither DNS query names nor alerts, so on the real captures the signal
-is still only two-valued. Closing that needs a capture with network, DNS and
-alert telemetry together — which is a data problem, not a code one.
+Validation is split three ways here and the parts are reported separately,
+because they rest on different evidence and averaging them would produce a
+number whose provenance nobody could state.
+
+| | Evidence | Result |
+|---|---|---|
+| DGA — false positives | **real** (`tests/data/real.passivedns`) | 0 findings, ceiling 0.546 against a 0.65 threshold |
+| DGA — true positives | synthetic (`DgaCorpusGenerator`) | 3 of 4 families, 0 false positives |
+| TLS fingerprints | synthetic, both sides | 2 of 2 clients, 0 false positives |
+
+**Was a real corpus available?** For the DGA half, only for specificity.
+Public DGA feeds exist — netlab 360 and Bambenek both publish one — but
+nothing is fetched at runtime or at test time and no redistribution licence
+was verified, so none was vendored and sensitivity is synthetic. For TLS
+fingerprint rarity, no openly-licensed `ssl.log` corpus carrying JA3 was
+reachable at all, so **both** halves of that measurement are synthetic and it
+measures the arithmetic rather than the detector. That answer was established
+before the code was written, per the roadmap's instruction, because deciding
+it afterwards is how a synthetic result quietly gets written up as a real one.
+
+### Entropy does not work at this length, and that is the cluster's main finding
+
+The roadmap for this cluster specified four components, weighted
+`nxdomain_rate` 0.34, `label_entropy` 0.26, `bigram_improbability` 0.24,
+`structure` 0.16. The entropy component was measured and dropped.
+
+Per-character Shannon entropy is bounded by `log2(len)`. The DNS tunnelling
+analyzer measures 40-to-60-character encoded subdomains, where that bound is
+far away and entropy separates base32 payload from English cleanly — section 5
+is the record of it working. A second-level label is 6 to 20 characters, and
+there the bound dominates. Measured over the 41 real registered labels of
+eight characters or more in the fixture, against random strings of matched
+length:
+
+| population | entropy ratio, mean | bigram improbability, median | p90 |
+|---|---|---|---|
+| real registered labels | 0.855 | 0.145 | 0.467 |
+| random alphabetic | 0.893 | 0.667 | 0.831 |
+| random hexadecimal | 0.807 | 0.941 | 1.000 |
+| dictionary concatenation | 0.869 | 0.065 | 0.167 |
+
+Four points of separation on entropy, and **inverted on the hex families**: a
+16-character hex string draws from a 16-character alphabet and so scores as
+*more* natural than `googleapis`. An entropy component would have penalised
+precisely the family the replacement catches best. It was removed rather than
+down-weighted, and its weight went to the character model.
+
+That is the same shape of correction cluster 1 made to rule 6 and cluster 2
+made to it again: the plan was written from reasoning and the measurement
+disagreed with it.
+
+### The character model, and why a word list rather than a frequency table
+
+The roadmap called for "a small embedded table of real domain bigrams".
+Writing one directly would mean inventing 1,369 letter-pair probabilities from
+memory and presenting three significant figures of them as measured.
+`analyzers/ngrams.py` embeds **1,233 ordinary English words** instead and
+computes the bigram counts from them at import. The word list is a datum that
+can be read and checked by eye; the table follows from it by arithmetic.
+
+Brand names are excluded from the list on purpose — `google`, `akamai`,
+`mozilla`, `microsoft`, `crwdcntrl` — because the fixture those labels come
+from is the corpus the model's specificity is measured against, and fitting
+the model to it would turn a measurement into a tautology. A test asserts the
+exclusion so it survives future edits to the list.
+
+**Dictionary generators defeat it, by construction.** A family that
+concatenates words scores a median 0.065 against a real-label median of 0.145:
+more English than English, because it is. One is planted in the corpus and
+counted as a **miss** rather than excluded from the denominator, which is why
+recall reads 0.750 rather than 1.000. Catching those needs a word-boundary
+model and is a separate piece of work.
+
+### The synthetic corpus cannot set the threshold; the real fixture can
+
+Every threshold between 0.35 and 0.85 finds all three detectable families in
+`DgaCorpusGenerator` and fires on none of its decoys. The corpus says only
+that the answer lies in a wide band — which is worth stating plainly, because
+a benchmark that cannot distinguish two candidate settings has not validated
+either of them.
+
+The binding constraint is real traffic. Scored without `nxdomain_rate`, which
+`passivedns` cannot supply:
+
+| real label | score |
+|---|---|
+| `crwdcntrl.net` | 0.546 |
+| `msftncsi.com` | 0.519 |
+| `office365.com` | 0.405 |
+| `wgg4ggefwg.ru` | 0.384 |
+| `netdna-cdn.com` | 0.355 |
+
+Labels shorter than six characters are not scored at all, and that gate is
+what those five rows depend on. At five, `ml314.com` scores 1.000,
+`gvt2.com` 0.827 and `fbcdn.net` 0.784 — real abbreviations whose four
+bigrams are genuinely improbable English, and which no threshold separates
+from a generated name. The cliff is between five and six and it is sheer:
+from six upward the ceiling is 0.546 whatever the gate, so six is taken
+rather than a rounder eight, which would score 43 of the fixture's registered
+labels instead of 68 and buy nothing.
+
+The threshold is 0.65, leaving a margin of **0.104** — comparable to the 0.05
+section 5 reports for DNS tunnelling, and pinned by a test so that a change
+eroding it shows up in a diff.
+
+Two things about that table are worth more than the margin. **The real decoys
+are 0.2 harder than the synthetic ones written to imitate them**: the
+consonant-heavy abbreviations in `DgaCorpusGenerator` top out at 0.337 while
+`crwdcntrl` reaches 0.546. The generator is less adversarial than reality, as
+generators are. And **`wgg4ggefwg.ru` is not obviously benign** — the fixture
+comes from a Stratosphere malware capture, so "false positive" there means
+unlabelled rather than known-good, the same caveat CTU-13's "background"
+carries in section 2. It scores 0.384 and is missed either way, because its
+digit lowers the structure component.
+
+### The fixture is one host, so this is a weaker specificity result than section 5's
+
+Section 5 reports 3,655 records from 18 hosts for DNS tunnelling. The
+committed excerpt is 400 records from **one** host, and of its 81 distinct
+registered labels only 41 are eight characters or more and therefore scored at
+all. Two families qualify — 44 labels under `.com`, 30 under `.net` — so the
+analyzer is silent because it scored the traffic and stayed under threshold,
+not because a gate hid it. That is the right shape of result, over a smaller
+sample than one would like.
+
+### rcode is missing, the component goes, and the predicate survives — unlike cluster 1
+
+`passivedns` records no response code, so the heaviest component is
+unavailable on the corpus that measures specificity. The component is omitted,
+the weights renormalise, and the payload carries `nxdomain_rate: null`.
+
+The interesting part is the *second* level of rule 6, where this cluster
+differs from cluster 1. There, the missing `resp_bytes` was the word
+"outbound" in `exfiltrates_to`, so the verb became unsayable and the analyzer
+had to fall back to a weaker one. Here the verb is
+`resolves_algorithmic_domain`, which the Lexicon defines as a domain "whose
+structure is consistent with algorithmic generation" — and structure is
+exactly what the character model measures. `rcode` is the strongest evidence
+for the claim; it is not the claim. So the predicate stands, the confidence
+falls out of the renormalisation, and the false-positive rate is reported
+separately for the two telemetry shapes instead of averaged.
+
+Getting this right is not a matter of applying the rule harder. It is a
+matter of reading what the verb asserts, one predicate at a time.
+
+### The family is not pre-filtered, and that costs recall on purpose
+
+`nxdomain_rate` needs a group. The group is `(source, public suffix)` — every
+registered domain one host resolved under `.biz`, or under `.com` — and it is
+deliberately **not** narrowed to the names that already look generated.
+Selecting a family by the property being measured would let any host
+manufacture a perfect NXDOMAIN rate out of its handful of typos.
+
+The cost is paid knowingly and is visible in the corpus: one planted family
+generates under `.com` on a host that also browses the web, so its NXDOMAIN
+rate is diluted to 71% against the 99% of the families that generate under a
+suffix their host does not otherwise use. It is still found. A quieter
+generator hiding under a heavily-browsed suffix would not be.
+
+### Two things the analyzer does that are not scoring decisions
+
+**Exemplars are chosen by resolution first, score second.** A generation family
+is a few hundred names that failed and one that worked, and the one that
+worked is the C2. It is no stranger-looking than the rest — in the corpus it
+scores 0.934, 0.876 and 0.811 while family members reach 1.000 — so a
+score-ordered report would omit the only actionable name in the set. All three
+detectable families report theirs.
+
+**The exemplar sort needed a total order, and finding that out was luck.**
+A generated family produces hundreds of names scoring an identical 1.0, and
+only three are reported. Without a tiebreaker the choice fell to whatever
+order `group_by` returned, which Polars does not promise to keep stable — so
+two runs over the same capture emitted different exemplars and therefore
+different content-addressed finding IDs. Every archived report and every
+benchmark comparison in this project rests on that not happening. It was
+caught by printing the findings twice and noticing the names had changed, not
+by a test; the test came after.
+
+### TLS: a prevalence claim, kept as one
+
+A JA3 hash identifies a TLS client build. The claim is that this one is rare
+in this environment, and no geometric mean of loosely-related quantities is
+assembled to make it resemble the behavioural analyzers — the mistake
+`intel.py` was warned against. Two components: `fingerprint_rarity` from
+estate-wide prevalence, and `estate_support`, because rarity needs an estate
+and on a three-host capture every fingerprint is rare.
+
+Result on the synthetic corpus — 768 sessions, 45 hosts, three shared browser
+builds — is 2 of 2 planted implants at 0.833, no false positive. The two
+decoys are the two ways a prevalence measure goes wrong, and both are
+suppressed: a fingerprint seen exactly **once** (a truncated handshake, not a
+client the host runs) and one shared by **two** hosts (a minority browser
+build) at 0.665.
+
+That second one is the honest edge. Two hosts of forty-five is unremarkable;
+two of five hundred is not, and `estate_support` encodes exactly that, so the
+same fingerprint clears the threshold at 0.794 on a 500-host estate. **The
+threshold was set after watching the decoy fire, on a corpus written by the
+same hand as the detector.** The rule it encodes should be trusted; the number
+should not, until a real `ssl.log` corpus exists.
+
+**A rare fingerprint does not corroborate.** It is in
+`CorrelationConfig.non_corroborating`, and not for rule 6's reason — a rare
+JA3 is complete evidence of exactly what it claims. The reason is cluster 4's:
+the multiplier counts independent *behaviours of a host*, and an implant
+beaconing over TLS earns a beaconing finding and a fingerprint finding from
+the same connection. That is one behaviour measured twice. `voidai demo`
+exercises the distinction — patient zero's fingerprint appears in its incident
+and is absent from its behaviour count.
+
+`resolves_algorithmic_domain` is deliberately not in that set: a host running
+a generation algorithm is doing a second thing, not restating the first.
+
+### JA3 is missing more often than it is present
+
+It comes from a Zeek package, not the core script, so a stock sensor writes an
+`ssl.log` with every column except the one that matters — which from outside
+is indistinguishable from having no TLS telemetry at all, and has a completely
+different fix. `voidai doctor --telemetry <dir>` reports which of the three
+states a capture is in, and the analyzer is silent for the two that cannot
+support a claim.
+
+The sharper version of that failure is a **partially** populated column: a
+package loaded late, handshakes the sensor could not parse. If null
+fingerprints were grouped rather than dropped, the few hosts missing one would
+form a group of their own — and being few, that group is *rare*, so the
+analyzer would report the sensor's own blind spot as a rare TLS client on
+exactly the hosts it knows least about. Dropping the whole column does not
+expose this; one host missing it does, and that is the test.
+
+### CTU-13 is unaffected, and that is asserted rather than assumed
+
+Section 2's real-capture figures were measured before this analyzer existed.
+CTU-13 is NetFlow: connections, no query names, no TLS sessions. This analyzer
+has no connection-derived signal, so it contributes exactly zero findings
+there and the ranks, queue depths and corroboration counts in section 2 stand
+unchanged. A test pins it, because "it probably does nothing on that shape" is
+how a benchmark quietly stops being comparable to its own history.
+
+### Cost
+
+Peak RSS on the demo capture is 262 MB with this analyzer and 261 MB without
+it, which is rule 2 behaving as advertised — analyzers run sequentially and
+release. On a 1.1M-record, 9,800-host DNS frame the analyzer peaks at 673 MB
+and runs at **60k records/second**, against the 180–207k the beaconing
+analyzer reaches on CTU-13.
+
+That gap is structural rather than a defect: beaconing evaluates Python once
+per *candidate pair*, and this evaluates it once per distinct
+(host, registered domain) — 332,700 scored labels on that frame. Three
+attempts at it are worth recording, because the first was the obvious one and
+was wrong:
+
+  * replacing the per-row `map_elements` suffix reduction with a Polars
+    expression: 32k → 34k records/second. Noise. The interpreter call per row
+    was not the bottleneck. The expression was kept anyway, because it is the
+    right shape for a streaming pass.
+  * replacing scalar `np.clip` with a comparison: NumPy dispatches through
+    `_wrapfunc` on every call, free on an array and ruinous on a scalar in a
+    loop running once per component per label.
+  * caching the character model per label: an estate resolves the same few
+    thousand registered domains from hundreds of hosts.
+
+The last two together took it from 32k to 60k. What remains is diffuse, and
+the largest single item is the same scalar `np.clip`, in
+`statistics.weighted_geometric_mean` — shared by every analyzer here, so worth
+more than this cluster, and not taken as part of it.
+
+### What is not measured
+
+**No real DGA sensitivity.** Nothing was fetched and nothing was vendored, so
+every true positive is synthetic. A licensed feed on disk would close it.
+
+**No real TLS anything.** Both halves synthetic.
+
+**Whether the character model holds outside English.** The word list is
+English, so a German or Turkish second-level label reads as improbable.
+`nxdomain_rate` is what carries a family in that case, and on `passivedns`
+there is nothing to carry it — so the fixture's clean result may not transfer
+to an estate that resolves a lot of non-English names. This is the limitation
+most likely to produce a surprise in the field.
+
+**Server breadth is the obvious next TLS component and is not used.** A rare
+client reaching two servers looks different from one reaching two hundred, and
+in the synthetic corpus the implants reach 2 while the minority browser build
+reaches 11. Adding it on that evidence would be calibrating against a
+difference this generator was written with, and the predicate claims rarity
+rather than breadth. It waits on a real corpus.
+
+---
+
+## 10. What is still open
+
+**Corroboration is broad but shallow on real data.** Seven analyzers now
+exist, and multi-way corroboration ranks correctly on synthetic traffic —
+`voidai demo` puts patient zero at priority 2.50 against a runner-up at 0.89,
+on five independent behaviours. But CTU-13 carries neither DNS query names nor
+alerts nor TLS, so on the real captures the signal is still only two-valued.
+Closing that needs a capture with network, DNS, TLS and alert telemetry
+together — which is a data problem, not a code one.
 
 **Threat intel does not corroborate the host that contacted it.** The
 predicate is unary and its subject is the indicator, so an intel hit forms its
@@ -941,6 +1236,20 @@ no signal available to it can distinguish from a private drop box. An asset
 inventory would demote both in one step, and the `AnalysisContext` already
 carries `ip_to_host` for exactly this.
 
+**The DGA character model has never seen a non-English estate.** Its word
+list is English, so a German or Turkish second-level label reads as
+improbable, and on telemetry without `rcode` there is no second component to
+carry the family. Section 9 states it as the limitation most likely to
+produce a surprise in the field, and closing it needs traffic from an estate
+that resolves a lot of non-English names rather than a code change.
+
+**No real corpus for either half of cluster 3's sensitivity.** Public DGA
+feeds exist but were not vendored — nothing is fetched, and no redistribution
+licence was verified. No openly-licensed `ssl.log` carrying JA3 was reachable
+at all, so TLS fingerprint rarity is synthetic on both sides and its threshold
+was set against a corpus written by the same hand as the detector. Both are
+data problems.
+
 **Memory headroom on the largest capture.** 2,662 MB does fit a 4GB board —
 measured against a hard cgroup ceiling, section 3 — but with roughly 1.1 GB
 spare rather than a wide margin. A third analyzer did not change that, and a
@@ -949,7 +1258,7 @@ it further.
 
 ---
 
-## 10. Energy
+## 11. Energy
 
 Every figure on this page was produced on x86_64 with **estimated** energy —
 this container exposes no RAPL counters, and the fallback profile deliberately
@@ -962,15 +1271,21 @@ verified.
 
 ---
 
-## 11. Reproducing
+## 12. Reproducing
 
 ```bash
-# Synthetic — no download required. Prints two tables: beaconing (section 1)
-# and volume-and-egress (section 7), scored against separate corpora.
+# Synthetic — no download required. Prints four tables against four separate
+# corpora: beaconing (section 1), volume-and-egress (section 7), domain
+# generation and TLS fingerprints (both section 9). Never averaged: they
+# measure different behaviours against different decoys, and their evidence
+# is not of the same kind.
 voidai bench
 
 # Threat intel: section 8. No corpus to download — the fixture is committed.
 voidai doctor --intel tests/data/example.ioc
+
+# TLS fingerprints: whether a capture can support section 9's second half.
+voidai doctor --telemetry ./capture
 
 # CTU-13 scenario 6 (245MB) and scenario 3 (1.4GB)
 mkdir -p data/ctu13 && cd data/ctu13

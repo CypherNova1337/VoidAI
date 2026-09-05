@@ -15,7 +15,7 @@ import pytest
 from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext
 from voidai.correlate import build_queue
 from voidai.eval.synth import build_demo_capture
-from voidai.ingest import load_alerts, load_connections, load_passivedns
+from voidai.ingest import load_alerts, load_connections, load_dns, load_passivedns, load_ssl
 from voidai.lexicon import Finding
 
 PATIENT_ZERO = "10.0.1.14"
@@ -28,10 +28,15 @@ def capture(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="module")
 def queue(capture: Path):  # type: ignore[no-untyped-def]
+    # Sources chosen the way `cli._detect` chooses them: dns.log where it
+    # exists, passivedns as the fallback. A fixture that read the fallback
+    # while the CLI read the primary would be testing a capture the product
+    # never analyses.
     ctx = AnalysisContext(
         connections=load_connections(capture),
-        dns=load_passivedns(capture),
+        dns=load_dns(capture),
         alerts=load_alerts(capture),
+        ssl=load_ssl(capture),
     )
     findings: list[Finding] = []
     for analyzer in DEFAULT_ANALYZERS:
@@ -42,12 +47,14 @@ def queue(capture: Path):  # type: ignore[no-untyped-def]
 class TestDemoCapture:
     def test_writes_all_three_formats(self, capture: Path) -> None:
         names = {p.name for p in capture.iterdir()}
-        assert {"conn.log", "capture.passivedns", "eve.json"} <= names
+        assert {"conn.log", "dns.log", "capture.passivedns", "ssl.log", "eve.json"} <= names
 
     def test_every_file_parses_through_a_production_parser(self, capture: Path) -> None:
         """The demo must not bypass the parsers it is demonstrating."""
         assert load_connections(capture).height > 10_000
+        assert load_dns(capture).height > 1_000
         assert load_passivedns(capture).height > 1_000
+        assert load_ssl(capture).height > 100
         assert load_alerts(capture).height > 1_000
 
 
@@ -55,7 +62,7 @@ class TestDemoDetection:
     def test_patient_zero_ranks_first(self, queue) -> None:  # type: ignore[no-untyped-def]
         assert queue.rank_of(PATIENT_ZERO) == 1
 
-    def test_all_four_behaviours_corroborate(self, queue) -> None:  # type: ignore[no-untyped-def]
+    def test_every_independent_behaviour_corroborates(self, queue) -> None:  # type: ignore[no-untyped-def]
         top = queue.incidents[0]
         behaviours = {p.value for p in top.corroborating_predicates}
         assert behaviours == {
@@ -63,6 +70,22 @@ class TestDemoDetection:
             "scans",
             "tunnels_dns_over",
             "triggered_signature",
+            "resolves_algorithmic_domain",
+        }
+
+    def test_the_rare_fingerprint_is_reported_but_does_not_corroborate(self, queue) -> None:  # type: ignore[no-untyped-def]
+        """Patient zero presents a TLS client nothing else in the estate runs.
+
+        It belongs in the incident an analyst reads, and it raises the
+        combined confidence through the noisy-OR. What it may not do is
+        multiply the priority: the fingerprint is a property of the same
+        channel the beaconing finding already scored.
+        """
+        top = queue.incidents[0]
+        predicates = {f.predicate.value for f in top.incident.findings}
+        assert "presents_rare_tls_fingerprint" in predicates
+        assert "presents_rare_tls_fingerprint" not in {
+            p.value for p in top.corroborating_predicates
         }
 
     def test_priority_clears_the_field(self, queue) -> None:  # type: ignore[no-untyped-def]

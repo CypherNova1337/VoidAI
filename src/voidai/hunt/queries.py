@@ -67,6 +67,7 @@ _TELEMETRY: dict[str, str] = {
     "dst_port": "connection",
     "domain": "dns",
     "signature": "alert",
+    "ja3": "tls",
 }
 
 #: Field names per dialect, indexed by what the value *means* rather than by
@@ -78,6 +79,7 @@ _FIELDS: dict[Dialect, dict[str, str]] = {
         "dst_port": "dst_port",
         "domain": "query",
         "signature": "signature",
+        "ja3": "ja3",
     },
     Dialect.KQL: {
         "src": "SourceIP",
@@ -85,6 +87,7 @@ _FIELDS: dict[Dialect, dict[str, str]] = {
         "dst_port": "DestinationPort",
         "domain": "QueryName",
         "signature": "AlertName",
+        "ja3": "Ja3Hash",
     },
     Dialect.SPL: {
         "src": "src_ip",
@@ -92,6 +95,7 @@ _FIELDS: dict[Dialect, dict[str, str]] = {
         "dst_port": "dest_port",
         "domain": "query",
         "signature": "signature",
+        "ja3": "ssl_ja3",
     },
     Dialect.ZEEK: {
         "src": "id.orig_h",
@@ -99,6 +103,7 @@ _FIELDS: dict[Dialect, dict[str, str]] = {
         "dst_port": "id.resp_p",
         "domain": "query",
         "signature": "note",
+        "ja3": "ja3",
     },
 }
 
@@ -110,21 +115,25 @@ _SOURCES: dict[Dialect, dict[str, str]] = {
         "connection": "  category: network_connection",
         "dns": "  category: dns_query",
         "alert": "  product: suricata\n  service: alert",
+        "tls": "  category: network_connection\n  service: tls",
     },
     Dialect.KQL: {
         "connection": "NetworkEvents",
         "dns": "DnsEvents",
         "alert": "SecurityAlert",
+        "tls": "TlsEvents",
     },
     Dialect.SPL: {
         "connection": "index=network",
         "dns": "index=dns",
         "alert": "index=ids",
+        "tls": "index=tls",
     },
     Dialect.ZEEK: {
         "connection": "conn.log",
         "dns": "dns.log",
         "alert": "notice.log",
+        "tls": "ssl.log",
     },
 }
 
@@ -322,6 +331,20 @@ def _pivot_for(finding: Finding) -> _Pivot | None:
             rationale=(
                 "Horizontal sweeps on a single port are how a worm moves. "
                 "Finding a second source is finding the next victim."
+            ),
+        )
+
+    if finding.predicate is Predicate.PRESENTS_RARE_TLS_FINGERPRINT:
+        return _Pivot(
+            field="ja3",
+            value=target.value,
+            exclude_src=source,
+            title=f"Other hosts presenting JA3 {target.value}",
+            rationale=(
+                "A JA3 hash identifies a TLS client build, not a destination. "
+                "A second host presenting the same rare one is running the "
+                "same software — which is the question the estate's history "
+                "answers and this capture cannot."
             ),
         )
 

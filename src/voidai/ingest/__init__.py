@@ -5,6 +5,7 @@ from voidai.ingest.schema import (
     ALERT_SCHEMA,
     CONNECTION_SCHEMA,
     DNS_SCHEMA,
+    SSL_SCHEMA,
     conform,
     empty,
 )
@@ -13,14 +14,17 @@ from voidai.ingest.zeek import (
     discover,
     load_connections,
     load_dns,
+    load_ssl,
     read_conn_log,
     read_dns_log,
+    read_ssl_log,
 )
 
 __all__ = [
     "ALERT_SCHEMA",
     "CONNECTION_SCHEMA",
     "DNS_SCHEMA",
+    "SSL_SCHEMA",
     "conform",
     "discover",
     "empty",
@@ -28,9 +32,11 @@ __all__ = [
     "load_connections",
     "load_dns",
     "load_passivedns",
+    "load_ssl",
     "read_conn_log",
     "read_dns_log",
     "read_eve",
     "read_passivedns",
+    "read_ssl_log",
     "scan_eve",
 ]

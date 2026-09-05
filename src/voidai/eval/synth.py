@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from voidai.ingest.schema import CONNECTION_SCHEMA, DNS_SCHEMA, conform
+from voidai.ingest.schema import CONNECTION_SCHEMA, DNS_SCHEMA, SSL_SCHEMA, conform
 
 _ZEEK_CONN_FIELDS = [
     "ts",
@@ -735,7 +735,413 @@ class DnsCorpusGenerator:
 
 
 
+#: Brand-shaped second-level labels for benign DNS. Written independently of
+#: `analyzers/ngrams.WORDS`, and only partly overlapping it: a benign corpus
+#: built entirely from the character model's own vocabulary would be scored by
+#: that model as trivially natural, and the resulting specificity figure would
+#: describe the overlap rather than the detector.
+_BENIGN_LABELS = (
+    "northwind", "brightpath", "quicksilver", "cedarline", "harborview",
+    "silverleaf", "ironbridge", "bluewater", "stonegate", "redwoodhill",
+    "lightfield", "thornbury", "greenmeadow", "whitestone", "amberglass",
+    "copperfield", "marblearch", "willowbrook", "foxglove", "hazelwood",
+    "clearsprings", "eastgate", "fairhaven", "goldencrest", "highpoint",
+    "junipertree", "kingsferry", "lakeshore", "maplegrove", "oakhollow",
+    "pinecrest", "riverbend", "sandpiper", "tallgrass", "underhill",
+    "valleyforge", "westbrook", "yellowstone", "ashgrove", "bellhaven",
+)
+
+#: Consonant-heavy, abbreviation-shaped labels that are entirely legitimate.
+#: The decoy class the real fixture supplied — `crwdcntrl`, `msftncsi` — and
+#: the one a structure signal alone will fall for.
+_ABBREVIATED_LABELS = (
+    "cdnmtrcs", "trckngsvc", "wbmtrx", "sftwrdst", "ntwrkstat",
+    "clddstrb", "ndpntsvc", "prtlgtwy", "sysmntrng", "tlmtrysvc",
+    "dgtlcrtfy", "scrtygwy", "bckpstrge", "mnthstsvc", "prfmnctrk",
+)
+
 _PATIENT_ZERO = "10.0.1.14"
+
+
+@dataclass(frozen=True)
+class DgaFamily:
+    """A planted domain-generation family, and the label it is scored against."""
+
+    src_ip: str
+    suffix: str
+    #: Every registered domain the family minted. Scoring matches on any of
+    #: them: a detector that names three of two hundred generated domains has
+    #: found the family, and demanding a particular one would measure which
+    #: exemplars the cap happened to keep.
+    domains: frozenset[str]
+    label: str
+    #: Whether this family is expected to be found. `suppobox`-style
+    #: dictionary generators are planted deliberately and are a known miss —
+    #: see `analyzers/ngrams.py`. Recording the expectation in the corpus
+    #: keeps it a *measured* limitation rather than a surprise.
+    detectable: bool = True
+
+
+@dataclass
+class DgaCorpus:
+    """Generated DNS telemetry with domain-generation families planted in it."""
+
+    queries: pl.DataFrame
+    families: list[DgaFamily]
+    #: (src_ip, registered domain) -> what the decoy is, for naming a false
+    #: positive rather than merely counting it.
+    decoys: dict[tuple[str, str], str] = field(default_factory=dict)
+
+    @property
+    def detectable_families(self) -> list[DgaFamily]:
+        return [f for f in self.families if f.detectable]
+
+    def family_of(self, src_ip: str, domain: str) -> DgaFamily | None:
+        for family in self.families:
+            if family.src_ip == src_ip and domain in family.domains:
+                return family
+        return None
+
+
+class DgaCorpusGenerator:
+    """Builds labelled DNS traffic containing domain-generation families.
+
+    Adversarial in three directions, each of which defeats one of the three
+    components on its own:
+
+      * **a host with a broken search suffix** — a high NXDOMAIN rate over
+        entirely ordinary names. Defeats `nxdomain_rate` alone.
+      * **consonant-heavy abbreviations** — `crwdcntrl`-shaped names that
+        resolve perfectly well. Defeats `structure` alone, and is the class
+        the real fixture actually contains.
+      * **a dictionary generator** — a real DGA family whose names are more
+        English than English. Defeats `bigram_improbability`, and is planted
+        as an expected miss rather than quietly omitted.
+
+    And one that defeats the *grouping*: the alphanumeric family generates
+    under `.com`, the same suffix its host browses, so its NXDOMAIN rate is
+    diluted by ordinary traffic exactly as it would be in a real estate.
+    """
+
+    def __init__(self, seed: int = 1337) -> None:
+        self.rng = np.random.default_rng(seed)
+
+    def _pick(self, alphabet: str, length: int) -> str:
+        return "".join(self.rng.choice(list(alphabet), size=length))
+
+    def _rows(
+        self,
+        src_ip: str,
+        names: list[str],
+        start_epoch: float,
+        interval: float,
+        rcodes: list[str] | None = None,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "ts": start_epoch + index * interval,
+                "uid": f"G{index:08x}",
+                "src_ip": src_ip,
+                "dst_ip": "10.0.0.53",
+                "query": name,
+                "qtype": "A",
+                "rcode": "NOERROR" if rcodes is None else rcodes[index],
+                "answers": "",
+                "source_file": "<synthetic>",
+                "source_line": index + 1,
+            }
+            for index, name in enumerate(names)
+        ]
+
+    def _browsing(self, src_ip: str, count: int, suffix: str = "com") -> list[str]:
+        """Ordinary lookups: brand-shaped labels, repeated as a person repeats."""
+        labels = self.rng.choice(_BENIGN_LABELS, size=min(count, len(_BENIGN_LABELS)), replace=False)
+        names = [f"{label}.{suffix}" for label in labels]
+        # Revisits: browsing returns to the same names, generation does not.
+        return names + [str(self.rng.choice(names)) for _ in range(count)]
+
+    def generate(
+        self,
+        hours: float = 6.0,
+        benign_hosts: int = 8,
+        start_epoch: float = 1_750_000_000.0,
+    ) -> DgaCorpus:
+        rows: list[dict[str, object]] = []
+        decoys: dict[tuple[str, str], str] = {}
+
+        # Benign: ordinary browsing, almost everything resolving.
+        for index in range(benign_hosts):
+            src = f"10.0.2.{index + 10}"
+            names = self._browsing(src, 40)
+            codes = ["NOERROR"] * len(names)
+            # A few typos, as any real host produces.
+            for position in self.rng.choice(len(names), size=3, replace=False):
+                codes[int(position)] = "NXDOMAIN"
+            rows += self._rows(src, names, start_epoch, 9.0, codes)
+            for name in set(names):
+                decoys[(src, name)] = "ordinary browsing"
+
+        # Decoy: a host with a misconfigured DNS search suffix. Every name is
+        # ordinary; two thirds of them fail. High NXDOMAIN, natural labels.
+        broken = "10.0.2.90"
+        names = self._browsing(broken, 40, suffix="net")
+        codes = ["NXDOMAIN" if self.rng.random() < 0.66 else "NOERROR" for _ in names]
+        rows += self._rows(broken, names, start_epoch, 7.0, codes)
+        for name in set(names):
+            decoys[(broken, name)] = "broken search suffix"
+
+        # Decoy: consonant-heavy service abbreviations, all resolving.
+        abbreviated = "10.0.2.91"
+        names = [f"{label}.{tld}" for label in _ABBREVIATED_LABELS for tld in ("com", "net")]
+        names += [str(self.rng.choice(names)) for _ in range(60)]
+        rows += self._rows(abbreviated, names, start_epoch, 11.0, ["NOERROR"] * len(names))
+        for name in set(names):
+            decoys[(abbreviated, name)] = "consonant-heavy abbreviation"
+
+        families: list[DgaFamily] = []
+
+        # Conficker-shaped: random lowercase, minority resolving.
+        alpha_host = "10.0.2.31"
+        alpha = [f"{self._pick('abcdefghijklmnopqrstuvwxyz', int(self.rng.integers(9, 13)))}.biz"
+                 for _ in range(180)]
+        codes = ["NXDOMAIN"] * len(alpha)
+        codes[42] = "NOERROR"  # the one the operator registered
+        rows += self._rows(alpha_host, alpha, start_epoch, 5.0, codes)
+        families.append(DgaFamily(alpha_host, "biz", frozenset(alpha), "random-alphabetic"))
+
+        # Alphanumeric, generating under the suffix its host also browses, so
+        # the family's NXDOMAIN rate is diluted by ordinary traffic.
+        mixed_host = "10.0.2.32"
+        benign_names = self._browsing(mixed_host, 40)
+        rows += self._rows(mixed_host, benign_names, start_epoch, 13.0, ["NOERROR"] * len(benign_names))
+        for name in set(benign_names):
+            decoys[(mixed_host, name)] = "ordinary browsing beside a DGA"
+        mixed = [f"{self._pick('abcdefghijklmnopqrstuvwxyz0123456789', int(self.rng.integers(12, 18)))}.com"
+                 for _ in range(200)]
+        codes = ["NXDOMAIN"] * len(mixed)
+        codes[7] = "NOERROR"
+        rows += self._rows(mixed_host, mixed, start_epoch + 1.0, 6.0, codes)
+        families.append(DgaFamily(mixed_host, "com", frozenset(mixed), "alphanumeric-under-browsed-suffix"))
+
+        # Hex-encoded: the shape per-character entropy scores as *more*
+        # natural than English, and the character model scores highest.
+        hex_host = "10.0.2.33"
+        hexed = [f"{self._pick('0123456789abcdef', 16)}.net" for _ in range(150)]
+        codes = ["NXDOMAIN"] * len(hexed)
+        codes[91] = "NOERROR"
+        rows += self._rows(hex_host, hexed, start_epoch, 8.0, codes)
+        families.append(DgaFamily(hex_host, "net", frozenset(hexed), "hex-encoded"))
+
+        # Dictionary generator: a real family, and an expected miss.
+        word_host = "10.0.2.34"
+        worded = [
+            f"{self.rng.choice(_BENIGN_LABELS)}{self.rng.choice(_BENIGN_LABELS)}.org"
+            for _ in range(160)
+        ]
+        codes = ["NXDOMAIN"] * len(worded)
+        codes[3] = "NOERROR"
+        rows += self._rows(word_host, worded, start_epoch, 10.0, codes)
+        families.append(
+            DgaFamily(word_host, "org", frozenset(worded), "dictionary-concatenation", detectable=False)
+        )
+
+        frame = conform(pl.DataFrame(rows), DNS_SCHEMA).sort("ts")
+        frame = frame.with_columns(
+            pl.int_range(1, frame.height + 1, dtype=pl.Int64).alias("source_line")
+        )
+        return DgaCorpus(queries=frame, families=families, decoys=decoys)
+
+
+@dataclass(frozen=True)
+class RareClient:
+    """A planted TLS client whose fingerprint nothing else in the estate uses."""
+
+    src_ip: str
+    ja3: str
+    label: str
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.src_ip, self.ja3)
+
+
+@dataclass
+class TlsCorpus:
+    """Generated TLS session telemetry plus its ground truth."""
+
+    sessions: pl.DataFrame
+    clients: list[RareClient]
+    decoys: dict[tuple[str, str], str] = field(default_factory=dict)
+
+    @property
+    def client_keys(self) -> set[tuple[str, str]]:
+        return {c.key for c in self.clients}
+
+
+class TlsCorpusGenerator:
+    """Builds labelled TLS sessions from a seed.
+
+    The decoys are the two ways a prevalence measure goes wrong. A fingerprint
+    seen **once** is a truncated handshake rather than a client the host runs,
+    and a fingerprint shared by a **handful** of hosts is a minority browser
+    build rather than an implant. Both are rare by the raw measure and neither
+    should reach the queue on its own.
+    """
+
+    #: Fingerprint-shaped hex, fixed rather than generated: a JA3 is an MD5 of
+    #: the ClientHello and the analyzer never parses it, so a stable literal
+    #: keeps the corpus readable in a failure message.
+    COMMON = (
+        "e7d705a3286e19ea42f587b344ee6865",
+        "6734f37431670b3ab4292b8f60f29984",
+        "a0e9f5d64349fb13191bc781f81f42e1",
+    )
+
+    def __init__(self, seed: int = 1337) -> None:
+        self.rng = np.random.default_rng(seed)
+
+    def _sessions(
+        self,
+        src_ip: str,
+        ja3: str,
+        count: int,
+        start_epoch: float,
+        servers: list[str],
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "ts": start_epoch + index * float(self.rng.integers(20, 400)),
+                "uid": f"T{self.rng.integers(0, 2**31):08x}",
+                "src_ip": src_ip,
+                "src_port": int(self.rng.integers(1024, 60000)),
+                "dst_ip": servers[index % len(servers)],
+                "dst_port": 443,
+                "version": "TLSv12",
+                "cipher": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                "server_name": f"host{index % len(servers)}.example.com",
+                "ja3": ja3,
+                "ja3s": "ec74a5c51106f0419184d0dd08fb05bc",
+                "established": True,
+                "source_file": "<synthetic>",
+                "source_line": 0,
+            }
+            for index in range(count)
+        ]
+
+    def generate(
+        self,
+        benign_hosts: int = 40,
+        start_epoch: float = 1_750_000_000.0,
+    ) -> TlsCorpus:
+        rows: list[dict[str, object]] = []
+        decoys: dict[tuple[str, str], str] = {}
+        servers = [f"93.184.216.{n}" for n in range(1, 12)]
+
+        # Benign estate: three browser builds spread across every host.
+        for index in range(benign_hosts):
+            src = f"10.0.3.{index + 10}"
+            ja3 = self.COMMON[index % len(self.COMMON)]
+            rows += self._sessions(src, ja3, int(self.rng.integers(8, 30)), start_epoch, servers)
+            decoys[(src, ja3)] = "common browser build"
+
+        # Decoy: a minority build shared by two hosts. Rare, but not one host.
+        minority = "1b2c3d4e5f60718293a4b5c6d7e8f900"
+        for src in ("10.0.3.70", "10.0.3.71"):
+            rows += self._sessions(src, minority, 12, start_epoch, servers)
+            decoys[(src, minority)] = "minority browser build, two hosts"
+
+        # Decoy: a unique fingerprint seen exactly once. A truncated handshake.
+        single = "ffee0011223344556677889900aabbcc"
+        rows += self._sessions("10.0.3.80", single, 1, start_epoch, servers)
+        decoys[("10.0.3.80", single)] = "single truncated handshake"
+
+        clients = [
+            RareClient("10.0.3.51", "9f1a7c4be2d3084f5a6b7c8d9e0f1a2b", "bespoke-implant-stack"),
+            RareClient("10.0.3.52", "3c5e7a9b1d2f4068a1b3c5d7e9f0a2b4", "modified-openssl-client"),
+        ]
+        for client in clients:
+            rows += self._sessions(
+                client.src_ip, client.ja3, int(self.rng.integers(6, 20)), start_epoch, servers[:2]
+            )
+
+        frame = conform(pl.DataFrame(rows), SSL_SCHEMA).sort("ts")
+        frame = frame.with_columns(
+            pl.int_range(1, frame.height + 1, dtype=pl.Int64).alias("source_line")
+        )
+        return TlsCorpus(sessions=frame, clients=clients, decoys=decoys)
+
+
+_ZEEK_SSL_FIELDS = [
+    "ts",
+    "uid",
+    "id.orig_h",
+    "id.orig_p",
+    "id.resp_h",
+    "id.resp_p",
+    "version",
+    "cipher",
+    "server_name",
+    "established",
+    "ja3",
+    "ja3s",
+]
+
+
+def write_zeek_ssl_log(
+    sessions: pl.DataFrame,
+    path: str | Path,
+    with_ja3: bool = True,
+) -> Path:
+    """Write a TLS frame as a Zeek `ssl.log`.
+
+    `with_ja3=False` writes the log a **stock Zeek** produces: every column
+    except the fingerprints, because those come from a package that is not
+    loaded. That is not a corner case to be tolerated, it is the common
+    deployment, and the analyzer's behaviour on it is asserted rather than
+    assumed.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fields = [f for f in _ZEEK_SSL_FIELDS if with_ja3 or not f.startswith("ja3")]
+    types = {
+        "ts": "time", "uid": "string", "id.orig_h": "addr", "id.orig_p": "port",
+        "id.resp_h": "addr", "id.resp_p": "port", "version": "string",
+        "cipher": "string", "server_name": "string", "established": "bool",
+        "ja3": "string", "ja3s": "string",
+    }
+    header = [
+        "#separator \\x09",
+        "#set_separator\t,",
+        "#empty_field\t(empty)",
+        "#unset_field\t-",
+        "#path\tssl",
+        "#fields\t" + "\t".join(fields),
+        "#types\t" + "\t".join(types[f] for f in fields),
+    ]
+
+    column = {
+        "ts": lambda r: f"{r['ts']:.6f}",
+        "uid": lambda r: r["uid"] or "-",
+        "id.orig_h": lambda r: r["src_ip"],
+        "id.orig_p": lambda r: str(r["src_port"]),
+        "id.resp_h": lambda r: r["dst_ip"],
+        "id.resp_p": lambda r: str(r["dst_port"]),
+        "version": lambda r: r["version"] or "-",
+        "cipher": lambda r: r["cipher"] or "-",
+        "server_name": lambda r: r["server_name"] or "-",
+        # Zeek's TSV boolean, which casts to null rather than False unless the
+        # parser maps it — the reason `read_ssl_log` maps it.
+        "established": lambda r: "T" if r["established"] else "F",
+        "ja3": lambda r: r["ja3"] or "-",
+        "ja3s": lambda r: r["ja3s"] or "-",
+    }
+    rows = [
+        "\t".join(column[f](r) for f in fields)
+        for r in sessions.sort("ts").iter_rows(named=True)
+    ]
+    path.write_text("\n".join(header + rows) + "\n")
+    return path
 
 
 def write_eve_json(path: str | Path, alerts: list[dict[str, object]]) -> Path:
@@ -770,6 +1176,46 @@ def write_eve_json(path: str | Path, alerts: list[dict[str, object]]) -> Path:
     return path
 
 
+_ZEEK_DNS_FIELDS = ["ts", "uid", "id.orig_h", "id.resp_h", "query", "qtype_name", "rcode_name"]
+
+
+def write_zeek_dns_log(queries: pl.DataFrame, path: str | Path) -> Path:
+    """Write a DNS frame as a Zeek `dns.log`.
+
+    Zeek names the columns `qtype_name` and `rcode_name`, which is why
+    `read_dns_log` accepts either spelling — and why this writes the Zeek
+    ones rather than the normalised ones. A generator that emitted the
+    internal names would test the schema against itself.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = [
+        "#separator \\x09",
+        "#set_separator\t,",
+        "#empty_field\t(empty)",
+        "#unset_field\t-",
+        "#path\tdns",
+        "#fields\t" + "\t".join(_ZEEK_DNS_FIELDS),
+        "#types\ttime\tstring\taddr\taddr\tstring\tstring\tstring",
+    ]
+    rows = [
+        "\t".join(
+            [
+                f"{r['ts']:.6f}",
+                r["uid"] or "-",
+                r["src_ip"],
+                r["dst_ip"] or "10.0.0.53",
+                r["query"],
+                r["qtype"] or "A",
+                r["rcode"] or "-",
+            ]
+        )
+        for r in queries.sort("ts").iter_rows(named=True)
+    ]
+    path.write_text("\n".join(header + rows) + "\n")
+    return path
+
+
 def write_passivedns(path: str | Path, queries: pl.DataFrame) -> Path:
     """Serialise DNS queries in passivedns' pipe-delimited format."""
     path = Path(path)
@@ -797,15 +1243,17 @@ def write_passivedns(path: str | Path, queries: pl.DataFrame) -> Path:
 
 
 def build_demo_capture(directory: str | Path, seed: int = 1337) -> Path:
-    """Write a complete multi-source capture: connections, DNS, and alerts.
+    """Write a complete multi-source capture: connections, DNS, TLS and alerts.
 
-    One host — `10.0.1.14` — exhibits all four behaviours VoidAI can detect,
-    hidden in benign traffic of each kind. Nothing about it is flagged in the
-    data; it is only distinguishable by measuring it, which is the point of
-    the demonstration.
+    One host — `10.0.1.14` — beacons, sweeps a port, tunnels over DNS, runs a
+    domain generation algorithm, presents a TLS client fingerprint nothing
+    else in the estate runs, and trips two severe signatures. Every one of
+    those is hidden in benign traffic of the same kind. Nothing about the host
+    is flagged in the data; it is distinguishable only by measuring it, which
+    is the point of the demonstration.
 
-    Written as three real files in the three real formats, so `voidai run`
-    exercises the production parsers rather than a shortcut.
+    Written as real files in real sensor formats, so `voidai run` exercises
+    the production parsers rather than a shortcut.
     """
     import numpy as np
 
@@ -860,6 +1308,44 @@ def build_demo_capture(directory: str | Path, seed: int = 1337) -> Path:
         .alias("src_ip")
     )
     write_passivedns(directory / "capture.passivedns", tunnel)
+
+    # The same queries again as a Zeek dns.log, with a generation family
+    # added: patient zero also runs a DGA.
+    #
+    # Written as a second file rather than folded into the passivedns above
+    # because passivedns records no response code, and the NXDOMAIN rate is
+    # the signal that separates a generator from a host with unusual taste in
+    # domain names. `_detect` prefers dns.log where both exist — so this file
+    # is the one that drives the demo, and it carries the tunnel as well as
+    # the family. The passivedns file stays because it is a format VoidAI
+    # supports and the CTU-13 captures ship it, and dropping it would remove
+    # the only demonstration of that parser.
+    dga = DgaCorpusGenerator(seed=seed).generate(hours=6.0)
+    # One family, on patient zero. The generator plants four, and the demo
+    # keeps the first: the other three would appear as further infected hosts
+    # and blunt the point being demonstrated, which is that *one* host doing
+    # several unrelated things outranks a field of hosts each doing one. The
+    # benign traffic and every decoy stay.
+    generated = dga.queries.filter(
+        ~pl.col("src_ip").is_in([f.src_ip for f in dga.families[1:]])
+    ).with_columns(
+        pl.when(pl.col("src_ip") == dga.families[0].src_ip)
+        .then(pl.lit(_PATIENT_ZERO))
+        .otherwise(pl.col("src_ip"))
+        .alias("src_ip")
+    )
+    combined = pl.concat([tunnel, generated], how="vertical").sort("ts")
+    write_zeek_dns_log(combined, directory / "dns.log")
+
+    # TLS: patient zero presents a client fingerprint nothing else runs.
+    tls = TlsCorpusGenerator(seed=seed).generate()
+    sessions = tls.sessions.with_columns(
+        pl.when(pl.col("src_ip") == tls.clients[0].src_ip)
+        .then(pl.lit(_PATIENT_ZERO))
+        .otherwise(pl.col("src_ip"))
+        .alias("src_ip")
+    )
+    write_zeek_ssl_log(sessions, directory / "ssl.log")
 
     # Alerts: estate-wide noise plus two rare severe rules
     alerts: list[dict[str, object]] = []

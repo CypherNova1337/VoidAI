@@ -18,13 +18,13 @@ from rich.table import Table
 from rich.text import Text
 
 from voidai import __version__
-from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext
+from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext, TlsDgaConfig
 from voidai.correlate import IncidentQueue, build_queue
 from voidai.hunt import Dialect, queries_for_incident
 from voidai.ingest.ioc import IOC_SUFFIX, load_indicators
 from voidai.ingest.passivedns import load_passivedns
 from voidai.ingest.suricata import load_alerts
-from voidai.ingest.zeek import load_connections, load_dns
+from voidai.ingest.zeek import load_connections, load_dns, load_ssl
 from voidai.lexicon import GRAMMAR, EntityType, Finding, Severity
 from voidai.reason import Reasoner, ReasoningConfig, ReasoningResult, default_backend
 from voidai.telemetry import EnergyMeter, RunReceipt, detect_platform
@@ -238,11 +238,16 @@ def _detect(
     if dns.is_empty():
         dns = load_passivedns(path)
     alerts = load_alerts(path)
+    # TLS sessions, for the fingerprint half of the tlsdga analyzer. Usually
+    # empty, and empty in two different ways — no ssl.log, or an ssl.log
+    # written without the JA3 package. `voidai doctor --telemetry` tells them
+    # apart; the analyzer is silent for either.
+    ssl = load_ssl(path)
     # Indicators are read from files and never retrieved. Absent by default:
     # `*.ioc` alongside the telemetry, or wherever `--intel` points.
     indicators = load_indicators(intel or path)
     ctx = AnalysisContext(
-        connections=connections, dns=dns, alerts=alerts, indicators=indicators
+        connections=connections, dns=dns, alerts=alerts, ssl=ssl, indicators=indicators
     )
 
     # Driven from DEFAULT_ANALYZERS so `voidai doctor` cannot report a set
@@ -443,7 +448,12 @@ def bench(
     limit: int = typer.Option(100_000, help="Cap on findings emitted, highest-scoring first."),
 ) -> None:
     """Score the analyzers against a labelled corpus, and meter the run."""
-    from voidai.eval.benchmark import run_benchmark, run_egress_benchmark
+    from voidai.eval.benchmark import (
+        run_benchmark,
+        run_dga_benchmark,
+        run_egress_benchmark,
+        run_tls_benchmark,
+    )
 
     if real is not None:
         if not real.is_file():
@@ -470,6 +480,34 @@ def bench(
     console.print(_accuracy_table("Detection accuracy — volume and egress", egress.detection))
     _render_findings(egress.findings)
     _render_receipt(egress.receipt)
+
+    # A third and fourth corpus, for the two halves of the tlsdga analyzer.
+    # They are printed separately from each other as well as from the two
+    # above: DGA specificity has a real corpus behind it and TLS fingerprint
+    # rarity has none, so one merged figure could not be honestly labelled.
+    console.print(f"\n[dim]Generating {hours:g}h domain-generation corpus (seed {seed})…[/dim]")
+    dga = run_dga_benchmark(seed=seed, hours=hours)
+    console.print()
+    console.print(_accuracy_table("Detection accuracy — domain generation", dga.detection))
+    _render_findings(dga.findings)
+    console.print(
+        "[dim]Scored per family, not per domain. Recall is 3 of 4 because a "
+        "dictionary-concatenation family is planted and is a known miss — see "
+        "analyzers/ngrams.py. Specificity against real traffic is measured "
+        "separately, on tests/data/real.passivedns.[/dim]"
+    )
+    _render_receipt(dga.receipt)
+
+    console.print(f"\n[dim]Generating TLS fingerprint corpus (seed {seed})…[/dim]")
+    tls = run_tls_benchmark(seed=seed)
+    console.print()
+    console.print(_accuracy_table("Detection accuracy — TLS fingerprints", tls.detection))
+    _render_findings(tls.findings)
+    console.print(
+        "[dim]Synthetic on both sides: no openly-licensed ssl.log corpus carrying "
+        "JA3 was reachable, so this measures the arithmetic and not the detector.[/dim]"
+    )
+    _render_receipt(tls.receipt)
 
 
 _HUNT_SUFFIX = {
@@ -722,11 +760,66 @@ def _intel_row(table: Table, intel: Path | None) -> None:
         )
 
 
+def _tls_row(table: Table, telemetry: Path | None) -> None:
+    """Report whether TLS fingerprints are actually available.
+
+    Written for the failure the roadmap for this cluster names: `ja3` is
+    produced by a Zeek *package*, not by the core script, so a sensor without
+    it writes an `ssl.log` with every column except the one that matters. From
+    outside, that is indistinguishable from having no TLS telemetry at all —
+    and the two have completely different fixes. One needs a sensor
+    configuration change; the other needs a sensor.
+    """
+    if telemetry is None:
+        table.add_row("tls", "[dim]none given — pass --telemetry to check an ssl.log[/dim]")
+        return
+
+    if not telemetry.exists():
+        table.add_row("tls", f"[red]not found:[/red] {escape(str(telemetry))}")
+        return
+
+    sessions = load_ssl(telemetry)
+    if sessions.is_empty():
+        table.add_row("tls", "[dim]no ssl.log found — TLS fingerprinting inactive[/dim]")
+        return
+
+    fingerprints = sessions["ja3"].drop_nulls()
+    fingerprints = fingerprints.filter(fingerprints.str.strip_chars() != "")
+    if fingerprints.is_empty():
+        table.add_row(
+            "tls",
+            f"[yellow]{sessions.height} session(s), no JA3[/yellow] — "
+            "load the JA3 Zeek package",
+        )
+        table.add_row(
+            "",
+            "[dim]ssl.log is being written but carries no client fingerprint, so "
+            "presents_rare_tls_fingerprint cannot be measured[/dim]",
+        )
+        return
+
+    hosts = sessions["src_ip"].drop_nulls().n_unique()
+    table.add_row(
+        "tls",
+        f"[green]{sessions.height} session(s)[/green] — "
+        f"{fingerprints.n_unique()} distinct JA3 across {hosts} host(s)",
+    )
+    if hosts < TlsDgaConfig().min_estate_hosts:
+        table.add_row(
+            "",
+            f"[dim]below the {TlsDgaConfig().min_estate_hosts}-host floor: rarity needs an "
+            "estate, so no fingerprint finding will be emitted[/dim]",
+        )
+
+
 @app.command()
 def doctor(
     model: Path | None = typer.Option(None, "--model", help="GGUF model to check for."),
     intel: Path | None = typer.Option(
         None, "--intel", help=f"Directory or file of local {IOC_SUFFIX} indicators to check."
+    ),
+    telemetry: Path | None = typer.Option(
+        None, "--telemetry", help="Directory of Zeek logs to check for TLS fingerprints."
     ),
 ) -> None:
     """Pre-flight check: platform, energy source, optional components.
@@ -788,6 +881,7 @@ def doctor(
         table.add_row("model", "[dim]none given — pass --model to check one[/dim]")
 
     _intel_row(table, intel)
+    _tls_row(table, telemetry)
 
     table.add_row("analyzers", ", ".join(a.name for a in DEFAULT_ANALYZERS))
     table.add_row("predicates", f"{len(GRAMMAR)} in the Lexicon")

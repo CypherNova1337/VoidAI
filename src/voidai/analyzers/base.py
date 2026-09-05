@@ -23,6 +23,7 @@ from voidai.ingest.schema import (
     ALERT_SCHEMA,
     CONNECTION_SCHEMA,
     DNS_SCHEMA,
+    SSL_SCHEMA,
     empty,
 )
 from voidai.lexicon import Entity, EntityType, Finding
@@ -49,6 +50,12 @@ class AnalysisContext:
     connections: Frame = field(default_factory=lambda: empty(CONNECTION_SCHEMA))
     dns: Frame = field(default_factory=lambda: empty(DNS_SCHEMA))
     alerts: Frame = field(default_factory=lambda: empty(ALERT_SCHEMA))
+
+    #: TLS session records. Empty unless an `ssl.log` was found, and empty is
+    #: an ordinary outcome: most captures in this project's test corpus carry
+    #: none. Present-but-fingerprintless is a *third* state and not the same
+    #: as either — see `analyzers/tlsdga.py`.
+    ssl: Frame = field(default_factory=lambda: empty(SSL_SCHEMA))
 
     #: Indicators the operator placed on disk. Empty unless an IOC file was
     #: found, and empty is the normal case: intel is optional, and a run
@@ -80,6 +87,9 @@ class AnalysisContext:
     def alert_scan(self) -> pl.LazyFrame:
         return self._scan(self.alerts)
 
+    def ssl_scan(self) -> pl.LazyFrame:
+        return self._scan(self.ssl)
+
     def record_count(self) -> int:
         """Total records available.
 
@@ -91,7 +101,7 @@ class AnalysisContext:
             return self.known_record_count
 
         total = 0
-        for frame in (self.connections, self.dns, self.alerts):
+        for frame in (self.connections, self.dns, self.alerts, self.ssl):
             if isinstance(frame, pl.DataFrame):
                 total += frame.height
             else:

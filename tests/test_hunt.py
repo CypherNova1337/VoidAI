@@ -102,6 +102,67 @@ def signature(host: str = "10.0.1.14", name: str = "ET TROJAN Beacon") -> Findin
     )
 
 
+def fingerprint(
+    host: str = "10.0.1.14",
+    ja3: str = "9f1a7c4be2d3084f5a6b7c8d9e0f1a2b",
+) -> Finding:
+    return finding(
+        Predicate.PRESENTS_RARE_TLS_FINGERPRINT,
+        Entity(type=EntityType.IP, value=host),
+        Entity(type=EntityType.TLS_FINGERPRINT, value=ja3),
+        confidence=0.83,
+    )
+
+
+class TestTlsFingerprintPivot:
+    """A JA3 is an indicator, but not one of the kinds already templated.
+
+    It is not a destination and not a name — it identifies the *client*, so
+    the hunt asks which other hosts run that client. Getting the field wrong
+    here is the failure mode this whole module exists to avoid: a query that
+    returns nothing forever while looking like a clean estate.
+    """
+
+    def test_pivots_on_the_fingerprint_and_excludes_the_known_host(self) -> None:
+        queries = queries_for(fingerprint())
+        assert queries
+        for query in queries:
+            assert "9f1a7c4be2d3084f5a6b7c8d9e0f1a2b" in query.query
+            assert "10.0.1.14" in query.query
+            assert query.pivot.startswith("ja3=")
+
+    def test_every_dialect_reads_from_its_tls_source(self) -> None:
+        """A JA3 does not live in the connection or DNS table."""
+        expected = {
+            Dialect.SIGMA: "service: tls",
+            Dialect.KQL: "TlsEvents",
+            Dialect.SPL: "index=tls",
+            Dialect.ZEEK: "ssl.log",
+        }
+        for query in queries_for(fingerprint()):
+            assert expected[query.dialect] in query.query
+
+    def test_the_fingerprint_is_matched_exactly(self) -> None:
+        """Unlike a tunnelling zone, a JA3 is the whole value, not a suffix."""
+        for query in queries_for(fingerprint()):
+            if query.dialect is Dialect.SIGMA:
+                assert "endswith" not in query.query
+
+
+class TestAlgorithmicDomainPivot:
+    def test_pivots_on_the_generated_name(self) -> None:
+        generated = finding(
+            Predicate.RESOLVES_ALGORITHMIC_DOMAIN,
+            Entity(type=EntityType.IP, value="10.0.2.31"),
+            Entity(type=EntityType.DOMAIN, value="uqnqxhhqz.biz"),
+        )
+        queries = queries_for(generated)
+        assert queries
+        for query in queries:
+            assert "uqnqxhhqz.biz" in query.query
+            assert "10.0.2.31" in query.query
+
+
 class TestPivotSelection:
     def test_every_dialect_is_emitted(self) -> None:
         queries = queries_for(beacon())

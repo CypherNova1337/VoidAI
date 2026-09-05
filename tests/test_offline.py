@@ -16,9 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from voidai.analyzers import AnalysisContext, BeaconingAnalyzer, ThreatIntelAnalyzer
+from voidai.analyzers import (
+    AnalysisContext,
+    BeaconingAnalyzer,
+    ThreatIntelAnalyzer,
+    TlsDgaAnalyzer,
+)
 from voidai.eval.benchmark import run_benchmark
-from voidai.eval.synth import CorpusGenerator
+from voidai.eval.synth import CorpusGenerator, DgaCorpusGenerator, TlsCorpusGenerator
 from voidai.ingest.ioc import load_indicators
 from voidai.ingest.zeek import read_conn_log
 
@@ -55,6 +60,21 @@ class TestPipelineRunsOffline:
     def test_detection_is_offline(self) -> None:
         corpus = CorpusGenerator(seed=1337).generate(hours=24.0)
         findings = BeaconingAnalyzer().analyze(AnalysisContext(connections=corpus.connections))
+        assert findings, "detection produced nothing — the test would be vacuous"
+
+    def test_tls_and_dga_detection_is_offline(self) -> None:
+        """The cluster most likely to tempt a lookup.
+
+        Both halves of this analyzer describe things a network tool would
+        normally resolve — a domain's registration status, a fingerprint's
+        reputation. Neither is looked up. The public-suffix reduction is a
+        table in the source, and every measurement comes from the capture.
+        """
+        dga = DgaCorpusGenerator(seed=1337).generate()
+        tls = TlsCorpusGenerator(seed=1337).generate()
+        findings = TlsDgaAnalyzer().analyze(
+            AnalysisContext(dns=dga.queries, ssl=tls.sessions)
+        )
         assert findings, "detection produced nothing — the test would be vacuous"
 
     def test_threat_intel_is_offline(self, tmp_path: Path) -> None:

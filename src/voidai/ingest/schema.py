@@ -52,6 +52,30 @@ DNS_SCHEMA: dict[str, pl.DataType] = {
     "source_line": pl.Int64,
 }
 
+# TLS session records (Zeek ssl.log)
+
+#: `ja3` and `ja3s` are **not** written by a stock Zeek. They appear only when
+#: the JA3 package is loaded, so the column is frequently absent — and, on a
+#: partially-configured sensor, frequently present and empty. Analyzers must
+#: therefore treat a null fingerprint as *unmeasured* rather than as a
+#: fingerprint that happens to be blank; see `analyzers/tlsdga.py`.
+SSL_SCHEMA: dict[str, pl.DataType] = {
+    "ts": pl.Float64,
+    "uid": pl.Utf8,
+    "src_ip": pl.Utf8,
+    "src_port": pl.Int32,
+    "dst_ip": pl.Utf8,
+    "dst_port": pl.Int32,
+    "version": pl.Utf8,
+    "cipher": pl.Utf8,
+    "server_name": pl.Utf8,  # SNI, may be null
+    "ja3": pl.Utf8,  # client fingerprint, absent without the JA3 package
+    "ja3s": pl.Utf8,  # server fingerprint, likewise
+    "established": pl.Boolean,
+    "source_file": pl.Utf8,
+    "source_line": pl.Int64,
+}
+
 # Alert records (Suricata EVE, Snort)
 
 ALERT_SCHEMA: dict[str, pl.DataType] = {
