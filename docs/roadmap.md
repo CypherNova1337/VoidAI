@@ -332,22 +332,50 @@ took the CTU-13 true positive from rank 358 to rank 1.
 seconds or hours apart. Require a minimum separation before asserting order, and
 record the separation in the evidence payload so a reader can judge it.
 
-### One more correlator question, left over from cluster 2
+### Attaching unary findings — settled, build it here
 
-Since this cluster is already opening `correlate/incidents.py`, settle this
-while it is open. `matches_threat_intel` is unary and its subject is the
-*indicator*, so incidents formed by subject put an intel hit in its own
-incident rather than in the one for the host that contacted it. A host that
-beacons **and** reaches a known-bad address currently reads as two incidents,
-which is exactly the conjunction the corroboration multiplier exists to
-surface.
+Cluster 2 surfaced this and correctly declined to settle it alone.
+`matches_threat_intel` is unary and its subject is the *indicator*, so
+incidents formed by subject put an intel hit in its own incident rather than in
+the one for the host that contacted it. A host that beacons **and** reaches a
+known-bad address reads as two incidents — exactly the conjunction the
+corroboration multiplier exists to surface, and the single most actionable fact
+the system can produce, currently invisible.
 
-Do not fix it by making the host the subject — the predicate says the subject
-appears in a feed, and a host does not. The question is whether incident
-formation should follow an edge from a finding's *object* to a matching
-finding's *subject*, and rule 6's third level applies to the answer: an
-assertion that came from a file is not the same kind of evidence as a
-measurement, and may not corroborate as though it were.
+The decision, to be implemented in this cluster:
+
+**Attach; do not re-subject.** Incident formation follows an edge from a
+finding's *object* to a unary finding's *subject*. The predicate is left
+alone — `matches_threat_intel(ip:45.83.220.17)` is a true and well-formed
+proposition about the address, and rewriting it to take the host as subject
+would make it false, since a host does not appear in a feed.
+
+**Attach to every incident naming the indicator.** Several hosts may have
+reached it, and each one's analyst needs to see it.
+
+**A finding that attached anywhere does not also stand alone.** One that
+attached nowhere stays its own incident — an indicator seen in traffic with no
+other finding against it is still worth reporting, just not worth promoting.
+
+**It does not corroborate.** `MATCHES_THREAT_INTEL` goes in `non_corroborating`,
+and the reason is not rule 6 — an intel match is complete evidence of exactly
+what it claims, not partial. The reason is what corroboration *means* here. The
+multiplier counts independent **behaviours of a host**, on the argument that a
+machine doing several unrelated suspicious things is more likely compromised
+than one doing a single thing. An intel hit is not a second thing the host did;
+it is better information about the first thing. Confirmatory evidence belongs in
+the noisy-OR, which already lifts combined confidence, and not in a count of
+behaviours.
+
+The failure mode that settles it: a feed that is stale, over-broad, or simply
+wrong would otherwise become a queue-flooding weapon, multiplying the priority
+of every host that touched anything in it. Cluster 2 built age decay because
+that worry is real; letting the same finding corroborate would reintroduce it on
+a different axis.
+
+**If intel hits later prove too weak in the queue, the lever is the finding's
+own confidence, not the behaviour count.** Written down so it is not "fixed"
+later by the move this section exists to rule out.
 
 ---
 
