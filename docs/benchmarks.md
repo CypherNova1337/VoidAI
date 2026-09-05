@@ -1201,7 +1201,191 @@ rather than breadth. It waits on a real corpus.
 
 ---
 
-## 10. What is still open
+## 10. Temporal ordering and unary attachment
+
+Two changes to `correlate/incidents.py`, neither of which detects anything.
+The first orders the findings inside an incident; the second changes which
+incident a finding lands in. Both are cross-cutting — every analyzer feeds
+this module — so most of what follows is about what they are *not* allowed to
+move.
+
+```
+0 new parsers · 0 new dependencies · 0 new telemetry · 26 tests
+```
+
+### There is no accuracy figure here, and there could not be
+
+`precedes` claims no observation of its own. It reads findings the analyzers
+already produced and asserts that one was seen before another, so there is no
+detection to score and no corpus that would supply a number. The intel
+attachment is the same shape: the join was already validated in section 8, and
+what changed is which incident it joins.
+
+So the measurements below are all of the *negative* kind — what did not move —
+and that is the honest form for this cluster rather than a shortfall in it.
+
+### The circularity, and the half of it that had no guard
+
+An incident's priority is a noisy-OR across the strongest finding per
+predicate, multiplied by a count of independent behaviours. The roadmap's
+warning for this cluster names the multiplier: `precedes` must not count
+toward corroboration, or every incident inflates its own ranking by describing
+itself. It was already in `non_corroborating`, so that half was covered before
+the work started.
+
+The other half was not. `non_corroborating` stops the multiplier and
+deliberately *does not* stop the noisy-OR — its docstring says so, because
+everything else in that set is a real observation about the world and raising
+combined confidence with one is sound. `precedes` is not a real observation.
+The correlator mints it from findings already inside the incident, so
+admitting it to the noisy-OR is the same closed loop on the other side of the
+arithmetic, and it tightens as behaviours are added: five behaviours produce
+four edges, each inheriting the confidence of a finding already counted.
+
+This is the argument section 8 already made for keeping observed volume out of
+an intel score — VoidAI's own observation may not be reported as though it
+corroborated the thing it was derived from — arriving from a different
+direction. It needed a second, narrower set, `non_evidential`, whose members
+contribute neither a multiplier nor a term:
+
+| | `non_corroborating` | `non_evidential` |
+|---|---|---|
+| Multiplies priority | no | no |
+| Enters the noisy-OR | **yes** | no |
+| Appears in the incident | yes | yes |
+| Why | not a *separate* behaviour | not an observation at all |
+
+Measured against the previous correlator over a 250-incident set: **zero
+priorities changed and zero ranks moved.** With the exclusion removed, the
+same set moves. That is the whole result for the ordering half.
+
+### Ranks move only where priorities tie, and only on a corpus that forces ties
+
+Adding a finding to an incident changes its content-addressed id, and the
+queue's final tiebreak among equal priorities is that id. So an incident that
+gains an edge can trade places with one it was tied with. How often that
+happens is a property of the corpus, not of the change:
+
+| Corpus | Incidents in a priority tie | Ranks moved |
+|---|---|---|
+| Confidences on five discrete values | 249 of 250 | 40 |
+| Confidences continuous, as analyzers emit them | 7 of 250 | **0** |
+
+Real analyzers produce continuous floats and real captures therefore tie
+rarely, so the exposure is confined to the tail. It was worth measuring rather
+than assuming, because the first corpus written to test it was the discrete
+one and it reported a 16% reshuffle that does not exist on real traffic.
+
+The tiebreak was left as it is. Rule 12 names the subject as the stable key
+and the queue uses the incident id instead, which is stable run-to-run but not
+across a change of contents — with zero measured movement, swapping it would
+have been a behaviour change bought with nothing.
+
+### Sensors disagree, and whether they disagree is checkable
+
+The trap as the roadmap states it: two log sources on one host can be seconds
+or hours apart, so require a minimum separation before asserting order. A
+single floor has to be set for the worst case, which is hours, and then
+nothing inside one log gets ordered either.
+
+It does not have to be one floor. Every Evidence names its Artifacts and every
+Artifact names its `source`, so whether two findings share a clock is already
+in the data. Two findings drawn from one source were written by one sensor,
+and a second between them is real. Across two sources nothing is guaranteed:
+
+| | Floor | Reasoning |
+|---|---|---|
+| One source | 1 s | One sensor, one clock, one log's own order |
+| Two or more | 300 s | Independent clocks; the roadmap's "seconds or hours" |
+
+Below the floor nothing is emitted, rather than an ordering emitted with a
+hedge attached. The separation, the floor it cleared, the shared-clock verdict
+and both source names go in the evidence payload, so a reader can disagree
+with the judgement rather than take it.
+
+### What the demo corpus could not validate
+
+`voidai demo` puts five behaviours on one host and produces **one** edge. Not
+a bug: the generator plants every behaviour at the first second of the
+capture, so six of the seven representative findings share a timestamp exactly
+and there is no order to measure. The one edge that survives is a DNS
+tunnelling finding 50 s before a DGA finding, both from `dns.log` — one
+sensor, one clock.
+
+That is the right outcome and a poor demonstration, and the fix is not in this
+module. A generator that staggers its planted behaviours would exercise the
+chain; writing one *here* would be building a corpus to flatter the feature
+it is supposed to test, which section 9 already paid for once.
+
+### Attaching a unary finding without re-subjecting it
+
+`matches_threat_intel` is unary and its subject is the indicator, so incident
+formation by subject filed an intel hit under the address rather than under
+the host that reached it. Incident formation now follows an edge from a
+finding's *object* to a unary finding's *subject*. Four consequences, all
+settled in roadmap §4 before the work began:
+
+- **The proposition is untouched.** `matches_threat_intel(ip:45.83.220.17)` is
+  true about the address. Re-subjecting it to the host would make it false.
+- **It attaches to every incident naming the indicator**, since several hosts
+  may have reached it and each one's analyst needs to see it.
+- **A finding that attached anywhere does not also stand alone**; one that
+  attached nowhere keeps its own incident. A group is dropped only when
+  nothing anchors it — an indicator that is *also* an actor in this estate
+  keeps its incident, and the hit stays in it too.
+- **It does not corroborate.** Not rule 6: a match is complete evidence of
+  exactly what it claims. The multiplier counts independent behaviours of a
+  host, and an intel hit is not a second thing the host did — it is better
+  information about the first thing. Confirmatory evidence belongs in the
+  noisy-OR, where it still lands. The failure mode that settles it is a feed
+  that is stale, over-broad or wrong: letting it corroborate would multiply
+  the priority of every host that touched anything in it, and section 8 built
+  age decay because that worry is real.
+
+The lever, if intel hits later prove too weak in the queue, is the finding's
+own confidence and not the behaviour count.
+
+### What it cost, for whoever takes the next one
+
+**A property carried on a `@property` broke the moment a finding could have a
+different subject.** `RankedIncident.subject` read `findings[0].subject` with
+findings sorted by confidence, which was correct while every finding in an
+incident shared a subject. Attachment ends that: a hit stronger than the
+host's own findings renamed the incident after an address in another country,
+and the queue row, `rank_of`, the hunt pivots and the model brief all read
+that one attribute. `Incident._derive_title` had the same assumption from the
+other side and rendered "2 hosts". Both were found by printing the queue, not
+by the type checker — the types were all still correct.
+
+**Two tests passed for a reason other than the one they named, and both were
+found by breaking the code rather than by reading it.** The first asserted
+that no entity precedes itself, using a three-behaviour incident in which no
+*adjacent* pair happened to share a pivot; it passed with the guard deleted.
+The second asserted the chain is stored in the order it describes, using three
+equally-confident behaviours, so it fell through to a finding-id tiebreak and
+passed under four of six hash seeds. Rule 8 says to break the fix and confirm
+the test fails; doing it to eleven guards found these two, and nothing else
+would have.
+
+**`hash()` in a test fixture defeats a test about reproducible ids.** The
+locator in `tests/test_correlate.py` was `abs(hash(kind)) % 1000`, and Python
+salts string hashing per process — so every fixture finding had a different
+content-addressed id in every run, and a determinism test could only ever
+compare a run with itself. The same shape as section 8's wall-clock `age_days`:
+the assertion looks like it covers reproducibility and covers nothing.
+
+**The sequence has to be stored in sequence.** Derived findings were first
+sorted with the rest by confidence, and edges inherit the confidence of what
+they order — so a run of equally-strong behaviours produced a chain in
+arbitrary order that a reader had to reassemble from the payloads, which
+defeats the point of the predicate. They are now stored last and in time
+order. The flag that keeps them last looks redundant next to the time key and
+is not: a sensor with an unset clock writes 1970, every key collides at zero,
+and only the flag holds.
+
+---
+
+## 11. What is still open
 
 **Corroboration is broad but shallow on real data.** Seven analyzers now
 exist, and multi-way corroboration ranks correctly on synthetic traffic —
@@ -1211,13 +1395,21 @@ alerts nor TLS, so on the real captures the signal is still only two-valued.
 Closing that needs a capture with network, DNS, TLS and alert telemetry
 together — which is a data problem, not a code one.
 
-**Threat intel does not corroborate the host that contacted it.** The
-predicate is unary and its subject is the indicator, so an intel hit forms its
-own incident rather than joining the incident for the host — section 8 has the
-account. A host that beacons *and* reaches a known-bad address is exactly the
-conjunction the ranking exists to surface, and it currently reads as two
-incidents. This is correlator-side work, cross-cutting, and belongs with
-cluster 4 rather than inside the intel branch.
+**Nothing has ordered a real sequence yet.** `precedes` works and is tested,
+but the only capture available to exercise it plants every behaviour in the
+same second — section 10 — so on `voidai demo` it emits one edge out of five
+and on CTU-13 there are two behaviours to order rather than five. Whether an
+ordered narrative actually helps an analyst is unanswered, and answering it
+needs a capture where a compromised host does several things hours apart. A
+data problem, like the one below it.
+
+**An intel hit still cannot be measured against a real feed.** Attachment
+means a hit now joins the host that reached the indicator rather than standing
+alone — section 10 — which closes the correlator-side half of the item that
+stood here. What it does to a queue at scale is still unmeasured: CTU-13 runs
+three analyzers and no IOC file, so no real capture in this repository has ever
+produced an intel finding. The behaviour under a large, imperfect feed is
+reasoned about and guarded by a flood test, not observed.
 
 **Volume and egress has no real accuracy figure, and may not get one here.**
 CTU-13 gives it queue ranks and corroboration counts — section 7 — but not a
@@ -1258,7 +1450,7 @@ it further.
 
 ---
 
-## 11. Energy
+## 12. Energy
 
 Every figure on this page was produced on x86_64 with **estimated** energy —
 this container exposes no RAPL counters, and the fallback profile deliberately
@@ -1271,7 +1463,7 @@ verified.
 
 ---
 
-## 12. Reproducing
+## 13. Reproducing
 
 ```bash
 # Synthetic — no download required. Prints four tables against four separate

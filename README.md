@@ -82,7 +82,8 @@ the model's job.**
 | **C2 Beaconing Analyzer** | Six-signal ensemble: interval regularity, schedule-floor tightness, payload uniformity, adaptive-bin autocorrelation, coverage, estate-wide destination rarity — over burst-coalesced arrivals | **working** |
 | **Fan-out / Scan Detector** | Destination breadth against revisit rate, per port | **working** |
 | **Volume & Egress Analyzer** | Egress ratio, robust volume deviation against the host's own baseline, estate-wide destination rarity, destination novelty | **working** ³ |
-| **Correlation & ranking** | Findings → per-host incidents, ordered by noisy-OR across independent behaviours | **working** |
+| **Correlation & ranking** | Findings → per-host incidents, ordered by noisy-OR across independent behaviours; unary findings attach to the host that reached the indicator | **working** |
+| **Temporal ordering** | `precedes` between adjacent behaviours in an incident, gated on whether the two observations share a sensor clock | **working** ⁷ |
 | **Language layer** | Token-budgeted evidence brief → grammar-constrained small model → claim verifier | **working** |
 | **DNS Tunnelling Detector** | Label entropy, subdomain cardinality, query length, qtype skew | **working** ¹ |
 | **PassiveDNS / Zeek DNS / EVE ingest** | Real query names and Suricata alerts | **working** |
@@ -164,6 +165,38 @@ and `voidai doctor --telemetry` reports which of the three states a capture is
 in. A rare fingerprint is reported but **does not corroborate**: an implant
 beaconing over TLS earns a beaconing finding and a fingerprint finding from
 the same connection, which is one behaviour measured twice.
+
+⁷ **Nothing measured, by construction — it is a rewrite of what an incident
+contains, not a detector.** `precedes` claims no new observation: it orders
+findings the analyzers already produced, so there is no detection rate to
+score and no corpus that could supply one. What is checkable is that it never
+reaches a score. An ordering is derived from findings *inside* the incident,
+so letting it count would be the incident inflating itself by describing its
+own contents — which is the same circularity that keeps observed volume out of
+an intel score. It is excluded from both the corroboration multiplier and the
+noisy-OR, and measured against the old correlator over 250 incidents that is
+exactly nil: **zero priorities changed and zero ranks moved.**
+
+The gate is what the design turns on. Two log sources on one host can be
+seconds or hours apart, and which it is depends on whether they share a
+sensor — so the floor is one second within a single source and five minutes
+across two, read off the `source` each Artifact already names. Below the floor
+nothing is said rather than said and hedged. On `voidai demo` that leaves a
+single edge out of a possible five, because the generator plants every
+behaviour in the same second; the demo capture has no sequence to narrate, and
+the analyzer declines to invent one.
+
+Alongside it, `matches_threat_intel` — unary, with the *indicator* as its
+subject — now attaches to the incident of every host that reached the
+indicator, instead of forming an incident of its own. The proposition is left
+untouched, because rewriting it to take the host as subject would make it
+false: a host does not appear in a feed. It **does not corroborate**, and not
+for want of evidence — a match is complete evidence of exactly what it claims.
+The multiplier counts independent *behaviours of a host*, and an intel hit is
+not a second thing the host did; it is better information about the first
+thing. Letting it count would hand a stale or over-broad feed the power to
+multiply the priority of every host that touched anything in it.
+[`docs/benchmarks.md`](docs/benchmarks.md) §10.
 
 ### Measured, on real malware traffic
 
@@ -311,7 +344,7 @@ no network.
 
 ```
  #  Severity  Prio  Subject        Behaviours                                             Findings
- 1  CRITICAL  2.50  ip:10.0.1.14   beacons_to, resolves_algorithmic_domain, scans, trig…        9
+ 1  CRITICAL  2.50  ip:10.0.1.14   beacons_to, resolves_algorithmic_domain, scans, trig…       10
  2  CRITICAL  0.89  ip:10.0.1.23   tunnels_dns_over                                             1
  3  HIGH      0.87  ip:10.0.1.17   beacons_to                                                   1
 ```

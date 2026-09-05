@@ -1,13 +1,17 @@
 # Roadmap — filling in the Lexicon
 
-Eighteen predicates are declared. Eleven have an analyzer that emits them. The
+Eighteen predicates are declared. Twelve have something that emits them. The
 vocabulary is ahead of the code on purpose: the grammar was written for the
-system VoidAI is meant to become, and the remaining seven predicates are the
+system VoidAI is meant to become, and the remaining six predicates are the
 work list.
 
 ```
-18 predicates declared · 7 analyzers built · 7 predicates unclaimed
+18 predicates declared · 7 analyzers built · 6 predicates unclaimed
 ```
+
+Twelve rather than eleven, and no eighth analyzer: `precedes` is emitted by
+the correlator, which is why cluster 4 below is the one entry here that adds
+no file to `analyzers/`.
 
 This document is the plan for the rest. Each section is a self-contained
 unit of work sized to one branch, and they are ordered by ratio of value
@@ -403,6 +407,23 @@ zone two ways in two analyzers.
 
 ## 4 · Temporal ordering — `analyzer-precedes`
 
+> **Done.** `src/voidai/correlate/incidents.py`, covered by 26 tests. Both
+> halves of the section are built: `precedes` between adjacent behaviours,
+> and the unary attachment settled below. **Nothing here has an accuracy
+> figure and nothing could** — neither half claims an observation, so what is
+> scorable is that they never reach a score. Measured against the previous
+> correlator over 250 incidents: zero priorities changed and zero ranks moved.
+> `docs/benchmarks.md` §10 has the account.
+>
+> **The trap below is half of the trap.** `precedes` was already kept out of
+> the corroboration count; the same circularity runs through the noisy-OR,
+> which had no guard and needed a second, narrower set. Read §10 before the
+> trap. Two other things worth having in advance: the ordering had to be
+> stored *in* order, because edges inherit the confidence of what they order
+> and sorting them with the rest scrambles the chain; and a `@property` that
+> derived an incident's subject from its findings broke the moment
+> attachment let a finding have a different one.
+
 No parser, no telemetry, no new dependency. It operates on findings that already
 exist and makes the narrative substantially better.
 
@@ -471,6 +492,62 @@ a different axis.
 **If intel hits later prove too weak in the queue, the lever is the finding's
 own confidence, not the behaviour count.** Written down so it is not "fixed"
 later by the move this section exists to rule out.
+
+### What it cost, for whoever takes the next one
+
+**The trap above names one of the two routes into a score, and the other one
+was open.** `CorrelationConfig.non_corroborating` stops the multiplier and
+deliberately does *not* stop the noisy-OR — every other member of that set is
+a real observation about the world, so raising combined confidence with one is
+sound. `precedes` is not an observation: the correlator derives it from
+findings already inside the incident, so the noisy-OR is the same closed loop
+on the other side of the arithmetic, and it tightens as behaviours are added.
+It needed a second and narrower set, `non_evidential`, whose members
+contribute neither. Two sets that both mean "does not count" is one more
+concept than anyone wants, and collapsing them would either let bookkeeping
+raise a score or stop a real observation from doing so.
+
+**A sensor-skew floor does not have to be one number.** The trap says
+timestamps come from sensors that disagree and asks for a minimum separation.
+A single floor has to cover the worst case, which is hours, and then nothing
+within one log gets ordered either. Whether two findings share a clock is
+already in the data — every Artifact names its `source` — so the floor is one
+second within a source and five minutes across two. Most of the design here
+turned out to be reading what the repository already records rather than
+adding anything.
+
+**Neither half of this cluster produces a number, and that is the honest
+report.** Every previous cluster could say something about precision, even if
+only that it was synthetic. This one detects nothing: it reorders what an
+incident contains and changes which incident a finding lands in. The
+measurement that matters is therefore *negative* — priorities and ranks
+unchanged against the previous correlator — and the temptation is to reach for
+a positive-sounding one instead. Cluster 5 should expect the same shape from
+anything correlator-side.
+
+**Print the queue, not just the findings.** Clusters 2 and 3 both recommend
+printing findings before writing tests, and it is still right, but this
+cluster's two worst defects were only visible one level up.
+`RankedIncident.subject` derived the incident's subject from `findings[0]`,
+which held while every finding in an incident shared a subject and stopped
+holding the moment a unary finding could attach — a strong intel hit renamed a
+host's incident after a foreign address, and the queue row, `rank_of`, the
+hunt pivots and the model brief all read that one attribute. Nothing in the
+findings shows it. The types stayed correct throughout.
+
+**Rule 8 earns its place on the eleventh guard, not the first.** Breaking each
+fix in turn found two tests that passed for a reason other than the one they
+named: a self-edge test whose three behaviours happened to contain no
+*adjacent* pair sharing a pivot, and a chain-order test whose three equal
+confidences let it fall through to a finding-id tiebreak and pass under four
+of six hash seeds. Both look like careful tests. Neither guarded anything.
+
+**A salted `hash()` in a fixture makes a reproducibility test meaningless.**
+`tests/test_correlate.py` built artifact locators from `abs(hash(kind)) % 1000`,
+and Python salts string hashing per process, so every fixture finding had a
+different content-addressed id in every run. The same shape as cluster 2's
+wall-clock `age_days`, and with the same tell: the assertion compares a run
+with itself and cannot fail.
 
 ---
 
@@ -565,7 +642,7 @@ vendoring.
 | 1 | Volume and egress | Low | **Done** — and it rewrote rule 6; see the section |
 | 2 | Threat intel | Low | **Done** — and rule 6 had to be re-derived without weights; see the section |
 | 3 | TLS and DGA | Medium | **Done** — and entropy turned out not to work at this length; see the section |
-| 4 | Temporal ordering | Low | No parser at all; markedly improves the narrative |
+| 4 | Temporal ordering | Low | **Done** — and the trap was half the trap; see the section |
 | 5 | Host and endpoint | High | Biggest corroboration payoff, biggest lift — split it up |
 | 6 | Web | Medium | Least novel; do last, or not at all |
 
