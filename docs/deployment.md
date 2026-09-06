@@ -72,6 +72,25 @@ memory rather than the bare peak. A 4GB Pi 5 clears that with about 1.1 GB to
 spare, and the full pipeline including the language model peaks at 2,072 MB —
 1.6 GB of headroom on the same board.
 
+**Re-bisected with eight analyzers**, against the four the table above was
+measured with:
+
+| Ceiling | Outcome |
+|---|---|
+| 1,600 – 2,200 MB | OOM-killed, every run |
+| 2,400 MB | completes — the row that was killed at four analyzers |
+| 2,600 MB | completes, peak 2,331 MB |
+| 3,000 MB | completes, peak 2,501 MB |
+| 3,696 MB | completes, peak 2,558 MB |
+
+The floor did not move, and if anything relaxed: doubling the analyzer count
+left the boundary in the same 2.4 – 2.6 GB band, and one ceiling that was
+killed before now completes. That is rule 2 confirmed a third time — peak
+memory is set by the hungriest analyzer, not by how many there are — and it is
+why the boundary is described as a band rather than a number. Single runs at
+the wall are not reproducible by nature, which is the whole point of the flaky
+row. **2.6 GB of free memory remains the recommendation**, unchanged.
+
 Windowing is still what a real deployment does — hourly or daily batches, not
 three days of telemetry at once — but it is now a convenience, not a
 requirement:

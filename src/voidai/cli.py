@@ -59,6 +59,26 @@ _SEVERITY_STYLE = {
 }
 
 
+def _safe(text: str) -> str:
+    """Prepare a string that came out of a file for terminal display.
+
+    `escape()` alone is not enough. It neutralises rich's markup, which is why
+    the evidence chain uses it, but it passes control characters through
+    untouched — and the rows that report a *rejected* line print that line as
+    written, so an operator can fix it. Whatever was in the file therefore
+    reaches the terminal, and a NUL, a backspace or an ANSI escape sequence can
+    blank the screen, hide text, or misrepresent which line was rejected.
+
+    Third occurrence of one pattern. The evidence chain escapes markup because
+    a log-derived component list was being swallowed by the parser;
+    `hunt.queries` strips non-printables before interpolating an indicator into
+    a query someone will paste into a console. This is the same rule for the
+    same reason, applied to the diagnostic that reads the most hostile input in
+    the tool: a file the operator was told to check *because* it looked wrong.
+    """
+    return escape("".join(character for character in text if character.isprintable()))
+
+
 def _severity_text(severity: Severity | None) -> Text:
     severity = severity or Severity.INFO
     return Text(severity.value.upper(), style=_SEVERITY_STYLE[severity])
@@ -883,8 +903,8 @@ def _inventory_row(table: Table, inventory: Path | None, telemetry: Path | None)
         table.add_row(
             "",
             f"[{colour}]{escape(state.replace('_', ' '))}[/{colour}] "
-            f"[dim]{escape(mapping.address)} -> {escape(mapping.hostname)}, "
-            f"{escape(mapping.register.name)}[/dim]",
+            f"[dim]{_safe(mapping.address)} -> {_safe(mapping.hostname)}, "
+            f"{_safe(mapping.register.name)}[/dim]",
         )
     _inventory_rejects(table, assets)
 
@@ -901,7 +921,7 @@ def _inventory_rejects(table: Table, assets: Inventory) -> None:
     table.add_row(
         "",
         f"[yellow]{len(assets.rejected)} line(s) rejected[/yellow] "
-        f"[dim]— first at {escape(path)}:{number}: {escape(text)}[/dim]",
+        f"[dim]— first at {_safe(path)}:{number}: {_safe(text)}[/dim]",
     )
 
 
@@ -958,7 +978,7 @@ def _intel_row(table: Table, intel: Path | None) -> None:
         table.add_row(
             "",
             f"[yellow]{len(indicators.rejected)} line(s) rejected[/yellow] — "
-            f"e.g. {escape(Path(first[0]).name)}:{first[1]} {escape(first[2][:40])}",
+            f"e.g. {_safe(Path(first[0]).name)}:{first[1]} {_safe(first[2][:40])}",
         )
 
 
@@ -1130,8 +1150,13 @@ def doctor(
     else:
         table.add_row("model", "[dim]none given — pass --model to check one[/dim]")
 
-    _intel_row(table, intel)
-    _inventory_row(table, inventory, telemetry)
+    # Fall back to the telemetry directory when no explicit path was given,
+    # because `_detect` does exactly that — `load_indicators(intel or path)`.
+    # Without this, `doctor --telemetry <dir>` reported "none given" for a
+    # directory whose `.inv` file `run` was about to load and apply, which is
+    # a diagnostic command lying about the system it is diagnosing.
+    _intel_row(table, intel or telemetry)
+    _inventory_row(table, inventory or telemetry, telemetry)
     _tls_row(table, telemetry)
     _host_row(table, telemetry)
 

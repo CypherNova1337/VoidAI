@@ -352,3 +352,90 @@ class TestTheCommandItself:
         ranked = build_queue([finding]).incidents[0]
         assert not ranked.corroborating_predicates, "fixture must be non-corroborating"
         assert "presents_rare_tls_fingerprint" in _behaviours_cell(ranked)
+
+
+class TestDoctorTellsTheTruth:
+    """A diagnostic that disagrees with the command it diagnoses is worse
+    than no diagnostic — the operator acts on it and is wrong.
+    """
+
+    def test_doctor_reports_the_inventory_run_will_actually_apply(
+        self, capture: Path
+    ) -> None:
+        """`_detect` auto-discovers `.inv` beside the telemetry; doctor must too.
+
+        Before this, `doctor --telemetry <dir>` printed "none given" for a
+        directory whose inventory `run` was about to load and apply.
+        """
+        from typer.testing import CliRunner
+
+        from voidai import cli
+
+        assert list(capture.glob("*.inv")), "fixture must ship an inventory"
+        doctor = CliRunner().invoke(cli.app, ["doctor", "--telemetry", str(capture)])
+        assert doctor.exit_code == 0, doctor.output
+        assert "none given" not in _inventory_line(doctor.output)
+        assert "mapping(s) applied" in _inventory_line(doctor.output)
+
+    def test_doctor_without_a_telemetry_path_still_says_none_given(self) -> None:
+        """The fallback must not invent an inventory that was never named."""
+        from typer.testing import CliRunner
+
+        from voidai import cli
+
+        out = CliRunner().invoke(cli.app, ["doctor"]).output
+        assert "none given" in _inventory_line(out)
+
+    def test_a_rejected_line_cannot_carry_control_characters_to_the_terminal(
+        self, capture: Path, tmp_path: Path
+    ) -> None:
+        """Rejected lines are printed as written, so an operator can fix them.
+
+        That makes this the one display fed directly from a file someone was
+        told to check *because* it looked wrong. An ANSI escape can blank the
+        screen or hide which line was actually rejected.
+        """
+        from typer.testing import CliRunner
+
+        from voidai import cli
+
+        for name in ("conn.log", "sysmon.jsonl"):
+            source = capture / name
+            if source.exists():
+                (tmp_path / name).write_bytes(source.read_bytes())
+        (tmp_path / "evil.inv").write_text(
+            "# name: probe\n\x1b[2J\x1b[31mHIJACKED\x1b[0m not-an-address\n\x00\x07\n"
+        )
+
+        out = CliRunner().invoke(cli.app, ["doctor", "--telemetry", str(tmp_path)]).output
+        assert "\x1b[2J" not in out, "an escape sequence reached the terminal"
+        assert "\x00" not in out, "a NUL reached the terminal"
+        assert "\x07" not in out, "a bell reached the terminal"
+        assert "rejected" in out, "the rejection must still be reported"
+
+    def test_the_sanitiser_keeps_the_text_an_operator_needs(self) -> None:
+        """Stripping must remove the weapon, not the message.
+
+        A row that reports "1 line rejected" and shows nothing of the line is
+        as useless as no row at all — the operator still cannot find it. Tested
+        on the function rather than through the CLI, because at an 80-column
+        terminal the table truncates the line for reasons that have nothing to
+        do with sanitising it.
+        """
+        from voidai.cli import _safe
+
+        cleaned = _safe("\x1b[2J\x1b[31mHIJACKED\x1b[0m 10.0.0.1\x00\x07")
+        assert "HIJACKED" in cleaned
+        assert "10.0.0.1" in cleaned
+        for bad in ("\x1b", "\x00", "\x07"):
+            assert bad not in cleaned
+
+    def test_the_sanitiser_also_neutralises_markup(self) -> None:
+        """Control characters are the new half; markup was already handled."""
+        from voidai.cli import _safe
+
+        assert "[/dim]" not in _safe("x[/dim]y") or "\\" in _safe("x[/dim]y")
+
+
+def _inventory_line(output: str) -> str:
+    return next((ln for ln in output.splitlines() if "inventory" in ln.lower()), "")
