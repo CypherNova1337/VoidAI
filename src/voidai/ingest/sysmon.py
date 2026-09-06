@@ -6,7 +6,7 @@ already produces: the same events shipped as newline-delimited JSON, one
 object per line, by Winlogbeat, NXLog, Fluent Bit, Elastic Agent or
 `Get-WinEvent | ConvertTo-Json`. That is what the public corpora ship too.
 
-The reason is roadmap rule 9. JSON lines need no new dependency, so host
+The reason is engineering rule 9. JSON lines need no new dependency, so host
 telemetry costs the core six packages exactly nothing. EVTX is a later branch
 and belongs behind an extra, alongside `[llm]` and `[tui]`.
 

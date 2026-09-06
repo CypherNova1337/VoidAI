@@ -215,7 +215,7 @@ def _workstation(src: str, start: float = 0.0) -> list[dict[str, object]]:
 
 
 class TestNetFlowShapedTelemetry:
-    """The trap the roadmap names, asserted from both sides.
+    """The known trap, asserted from both sides.
 
     NetFlow records total flow bytes as `orig_bytes` and has no responder
     figure at all, so `ingest/netflow.py` emits no `resp_bytes` column. The
@@ -378,7 +378,7 @@ class TestSeededCorpus:
         assert not [f for f in findings if f.object and f.object.value in shared]
 
     def test_browsing_does_not_produce_a_rare_destination_flood(self) -> None:
-        """The failure mode the roadmap predicts for this predicate.
+        """The predicted failure mode for this predicate.
 
         Every workstation reaches addresses nobody else in the estate does, so
         prevalence alone marks 72 of the corpus's destinations as rare. One

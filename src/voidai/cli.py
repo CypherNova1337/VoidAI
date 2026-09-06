@@ -264,7 +264,7 @@ def _render_receipt(receipt: RunReceipt) -> None:
             )
 
     if receipt.inventory is not None:
-        # Coverage, not a mapping count. `docs/roadmap.md` §6: an inventory
+        # Coverage, not a mapping count: an inventory
         # covering 3% of an estate is a rounding error dressed as an
         # improvement, and the count on its own cannot say which this is.
         table.add_row("inventory", escape(receipt.inventory.summary()))
@@ -848,7 +848,7 @@ def _inventory_row(table: Table, inventory: Path | None, telemetry: Path | None)
     Two numbers, because either alone misleads. A mapping count says nothing
     about whether the estate in front of you is covered, and a coverage
     percentage says nothing about how many statements were thrown away for
-    being too old to trust. `docs/roadmap.md` §6 asks for both.
+    being too old to trust. Either number alone misleads, so both are shown.
     """
     if inventory is None:
         table.add_row(
@@ -985,7 +985,7 @@ def _intel_row(table: Table, intel: Path | None) -> None:
 def _tls_row(table: Table, telemetry: Path | None) -> None:
     """Report whether TLS fingerprints are actually available.
 
-    Written for the failure the roadmap for this cluster names: `ja3` is
+    Written for the known failure: `ja3` is
     produced by a Zeek *package*, not by the core script, so a sensor without
     it writes an `ssl.log` with every column except the one that matters. From
     outside, that is indistinguishable from having no TLS telemetry at all —

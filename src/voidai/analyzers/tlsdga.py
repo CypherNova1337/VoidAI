@@ -29,7 +29,7 @@ mints, the unit an operator buys, and the unit a responder blocks.
 
 ### Entropy is not used here, and that is a measurement rather than a taste
 
-The obvious component, and the one the roadmap for this cluster specified, is
+The obvious component, and the one originally specified, is
 the Shannon entropy the DNS tunnelling analyzer already computes. It does not
 work at this length. A second-level label is 6 to 20 characters and
 per-character entropy is bounded by `log2(len)`, so over short strings it
@@ -159,8 +159,8 @@ from voidai.lexicon import Artifact, Entity, EntityType, Evidence, Finding, Pred
 
 #: Weights for the domain-generation score.
 #:
-#: `nxdomain_rate` keeps the weight the cluster roadmap gave it: it is the
-#: signal a DGA cannot avoid. The other two split what the roadmap assigned to
+#: `nxdomain_rate` keeps the weight originally assigned to it: it is the
+#: signal a DGA cannot avoid. The other two split what was assigned to
 #: entropy and structure, in the ratio that measured best — see below.
 _DGA_WEIGHTS = {
     "nxdomain_rate": 0.34,

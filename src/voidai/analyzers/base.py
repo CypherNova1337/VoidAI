@@ -212,7 +212,7 @@ class AnalysisContext:
         up a citation it did not rely on.
 
         A finding that names `host:FINANCE-WS04` asserts something no sensor
-        said. `docs/roadmap.md` §6: a wrong mapping attaches a beacon to an
+        said. A wrong mapping attaches a beacon to an
         innocent machine with full confidence and a clean chain of custody, so
         the chain has to carry the mapping itself — which file stated it, on
         which line, and how old the statement was when the traffic happened.

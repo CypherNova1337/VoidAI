@@ -214,7 +214,7 @@ class TestStaleness:
 class TestCoverage:
     def test_coverage_reports_the_fraction_not_the_count(self, tmp_path: Path) -> None:
         """A mapping count cannot distinguish a complete inventory from one
-        covering 3% of an estate. `docs/roadmap.md` §6."""
+        covering 3% of an estate."""
         write(tmp_path, "10.0.1.14  FINANCE-WS04  stated=2025-06-01\n")
         observed = {f"10.0.1.{n}" for n in range(10, 110)}
         coverage = load_inventory(tmp_path).coverage(WINDOW, observed)

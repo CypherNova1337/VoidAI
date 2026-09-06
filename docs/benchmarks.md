@@ -559,7 +559,7 @@ starts reporting backups is a failing test rather than a quiet flood.
 
 ### NetFlow has no direction, and the obvious default deletes every detection
 
-This is the trap the roadmap names, and it is worth the space because the
+This is the trap this predicate carries, and it is worth the space because the
 failing version emits no error and reads as a quiet network.
 
 `ingest/netflow.py` records total flow bytes as `orig_bytes` — a NetFlow
@@ -611,7 +611,7 @@ NetFlow. That is a property of the telemetry, recorded so a reader knows what
 the floor means on theirs.
 
 **Alert burden on a real estate.** `contacts_rare_destination` is the
-predicate the roadmap flags as a flood waiting to happen, and the corpus
+predicate flagged from the start as a flood waiting to happen, and the corpus
 proves the flood is real: without its score threshold, prevalence alone marks
 72 browsing destinations as rare and the analyzer emits one finding each at
 confidences around 0.03. Gated, it emits one. Whether that holds on a
@@ -665,7 +665,7 @@ about arithmetic: do not substitute a value for a measurement you do not have.
 It is really a rule about claims. A component dropped from a score, and a
 claim left standing that the component was the only evidence for, are the same
 error — and the second is harder to see, because the arithmetic looks
-scrupulous right up to the point where the verb is chosen. The roadmap's rule
+scrupulous right up to the point where the verb is chosen. The rule
 6 now says so in three levels rather than one, because there turned out to be
 a third.
 
@@ -902,7 +902,7 @@ known-bad address is exactly the conjunction the noisy-OR was built to
 surface.
 
 Fixing it means changing how incidents are formed, which is cross-cutting:
-correlation behaviour affects every cluster in the roadmap, and rule 6's third
+correlation behaviour affects every analyzer, and rule 6's third
 level says a finding resting on external assertion must not corroborate in the
 way a measurement does. Cluster 4 is also correlator-side work. It is recorded
 here, and left for that discussion, rather than settled unilaterally inside
@@ -929,12 +929,12 @@ was verified, so none was vendored and sensitivity is synthetic. For TLS
 fingerprint rarity, no openly-licensed `ssl.log` corpus carrying JA3 was
 reachable at all, so **both** halves of that measurement are synthetic and it
 measures the arithmetic rather than the detector. That answer was established
-before the code was written, per the roadmap's instruction, because deciding
+before the code was written, because deciding
 it afterwards is how a synthetic result quietly gets written up as a real one.
 
 ### Entropy does not work at this length, and that is the cluster's main finding
 
-The roadmap for this cluster specified four components, weighted
+The design specified four components, weighted
 `nxdomain_rate` 0.34, `label_entropy` 0.26, `bigram_improbability` 0.24,
 `structure` 0.16. The entropy component was measured and dropped.
 
@@ -965,7 +965,7 @@ disagreed with it.
 
 ### The character model, and why a word list rather than a frequency table
 
-The roadmap called for "a small embedded table of real domain bigrams".
+The design called for "a small embedded table of real domain bigrams".
 Writing one directly would mean inventing 1,369 letter-pair probabilities from
 memory and presenting three significant figures of them as measured.
 `analyzers/ngrams.py` embeds **1,233 ordinary English words** instead and
@@ -1229,7 +1229,7 @@ and that is the honest form for this cluster rather than a shortfall in it.
 ### The circularity, and the half of it that had no guard
 
 An incident's priority is a noisy-OR across the strongest finding per
-predicate, multiplied by a count of independent behaviours. The roadmap's
+predicate, multiplied by a count of independent behaviours. The
 warning for this cluster names the multiplier: `precedes` must not count
 toward corroboration, or every incident inflates its own ranking by describing
 itself. It was already in `non_corroborating`, so that half was covered before
@@ -1285,7 +1285,7 @@ have been a behaviour change bought with nothing.
 
 ### Sensors disagree, and whether they disagree is checkable
 
-The trap as the roadmap states it: two log sources on one host can be seconds
+The trap, stated plainly: two log sources on one host can be seconds
 or hours apart, so require a minimum separation before asserting order. A
 single floor has to be set for the worst case, which is hours, and then
 nothing inside one log gets ordered either.
@@ -1298,7 +1298,7 @@ and a second between them is real. Across two sources nothing is guaranteed:
 | | Floor | Reasoning |
 |---|---|---|
 | One source | 1 s | One sensor, one clock, one log's own order |
-| Two or more | 300 s | Independent clocks; the roadmap's "seconds or hours" |
+| Two or more | 300 s | Independent clocks; "seconds or hours" apart |
 
 Below the floor nothing is emitted, rather than an ordering emitted with a
 hedge attached. The separation, the floor it cleared, the shared-clock verdict
@@ -1325,7 +1325,7 @@ it is supposed to test, which section 9 already paid for once.
 formation by subject filed an intel hit under the address rather than under
 the host that reached it. Incident formation now follows an edge from a
 finding's *object* to a unary finding's *subject*. Four consequences, all
-settled in roadmap §4 before the work began:
+settled before the work began:
 
 - **The proposition is untouched.** `matches_threat_intel(ip:45.83.220.17)` is
   true about the address. Re-subjecting it to the host would make it false.
@@ -1389,10 +1389,10 @@ and only the flag holds.
 
 ## 11. Host and endpoint — a real corpus, and a refusal to score it
 
-The first half of roadmap section 5: `executes_rare_process` and
+The first half of the host cluster: `executes_rare_process` and
 `exhibits_anomalous_lineage`, one analyzer, one parser, one baseline.
 `establishes_persistence` and `authentication_anomaly` are deliberately not
-built — see the roadmap section for why that split and not another.
+built — see below for why that split and not another.
 
 **The headline is not the accuracy figure.** It is that a real, openly
 licensed, correctly formatted corpus of Windows attack telemetry exists, is
@@ -1415,7 +1415,7 @@ Reproduce with `voidai bench` (fifth table) and
 
 ### The trap, and the answer
 
-Roadmap section 5 names it: *rarity needs an estate.* Every "rare process"
+The constraint is *rarity needs an estate.* Every "rare process"
 signal degenerates on a single host, where everything is rare exactly once.
 
 The answer turns on what each verb *asserts*. The Lexicon already says:
@@ -1497,7 +1497,7 @@ below this cluster's own floor.
 Forge.** Verified by fetching `LICENSE`, not by reputation. Ships JSON lines
 with `EventID`, `Hostname`, `UtcTime`, `Image`, `CommandLine`, `ParentImage`
 and `ProcessGuid` at the top level, so **no EVTX parser and no new
-dependency** — roadmap rule 9 satisfied without an extra.
+dependency** — engineering rule 9 satisfied without an extra.
 
 Committed as `tests/data/real.sysmon.jsonl.gz`: every event-ID-1 record from
 `compound/apt29/day1`, verbatim except the `Message` field, which is a
@@ -1515,7 +1515,7 @@ Either reason alone would have been enough.
 
 ### Command-line entropy was measured and removed
 
-The roadmap asked for command-line length **and entropy**. Entropy is not in
+The design asked for command-line length **and entropy**. Entropy is not in
 the score, and the reason is not section 9's.
 
 Section 9 found entropy fails on 6-to-20-character domain labels because at
@@ -1782,7 +1782,7 @@ nothing only because the tiebreak was written first.
 Sysmon event ID 1 records a computer name and no address, so the demo's
 compromised machine appears in the queue **twice** — `ip:10.0.1.14` for
 everything the network sensors saw, and `host:FINANCE-WS04` for what the
-endpoint agent saw. The corroboration payoff the roadmap promises for this
+endpoint agent saw. The corroboration payoff promised for this
 cluster is therefore only half collected: two host behaviours corroborate each
 other, and neither corroborates the five network behaviours on the same
 machine.
@@ -2003,7 +2003,7 @@ demonstrate a technique, and one host is enough for that.
 
 **Two host predicates remain unclaimed.** `establishes_persistence` and
 `authentication_anomaly` are declared in the Lexicon and deliberately not
-built; roadmap section 5 says why. Neither shares the parser or the baseline
+built. Neither shares the parser or the baseline
 that made the first two one unit of work.
 
 **A per-image command-line baseline is unbuilt.** Section 11 measured entropy

@@ -253,7 +253,7 @@ by date fall back to the file path and line they were written on.
 That last tiebreaker is not decoration. Without it the winner would depend on
 directory iteration order, and a finding's subject — and therefore its
 content-addressed ID — would differ between two runs over one capture. Rule 12
-of `docs/roadmap.md` applies to a join as much as to a top-N.
+of `docs/engineering-rules.md` applies to a join as much as to a top-N.
 
 ---
 
@@ -275,5 +275,5 @@ scoped per mapping, and it is not here because a half-implemented one — where
 the ranges are read but the analyzers still resolve once per run — would look
 like it worked.
 
-**Any retrieval at all.** Rule 11 of `docs/roadmap.md`, asserted by
+**Any retrieval at all.** Engineering rule 11, asserted by
 `tests/test_offline.py`.

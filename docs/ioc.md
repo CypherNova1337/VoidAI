@@ -187,7 +187,7 @@ is the same rule `alerts.py` applies to a signature firing.
 
 URL and file-hash indicators parse, index, and count — and nothing in this
 repository can match them yet. There is no HTTP log parser and no process
-telemetry until roadmap clusters 5 and 6.
+telemetry until the host and inventory work landed.
 
 They are loaded anyway, because the alternative is a parser that misreads them
 as domains and produces indicators that can never match. `voidai doctor`
@@ -211,6 +211,6 @@ is what an operator can produce in every environment, including the ones where
 this runs, so it came first.
 
 **Any retrieval at all.** No fetch, no refresh, no "update on start". Rule 11
-of `docs/roadmap.md`, asserted by `tests/test_offline.py`. This is the cluster
+engineering rule, asserted by `tests/test_offline.py`. This is the work
 most likely to tempt someone into an HTTP call, and the whole architecture
 rests on the call not being made.

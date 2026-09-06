@@ -4,7 +4,7 @@ An inventory answers one question: which machine held this address. Nothing
 here derives that answer — not from DHCP leases, not from reverse DNS, not
 from traffic. An inventory is a file an operator wrote, read from disk and
 from nowhere else, exactly like `voidai.ingest.ioc` and for the same reason
-(`docs/roadmap.md` rule 11).
+(`docs/engineering-rules.md` rule 11).
 
 ## What it is for
 
@@ -36,7 +36,7 @@ it.
 
 ## Why every mapping carries a date
 
-`docs/roadmap.md` §6: *a wrong mapping is worse than none*. An inventory that
+*A wrong mapping is worse than none.* An inventory that
 names the wrong machine attaches a beacon to an innocent host with full
 confidence and a clean chain of custody, which is the one failure this project
 cannot tolerate — a citation is the thing an analyst is least likely to
@@ -220,7 +220,7 @@ class Coverage:
     A count of mappings answers the wrong question. An inventory of four
     hundred machines against a capture from a segment holding six of them has
     covered six, and an inventory of three against a segment of a hundred is a
-    rounding error dressed as an improvement — `docs/roadmap.md` §6.
+    rounding error dressed as an improvement.
     """
 
     loaded: int = 0

@@ -51,7 +51,7 @@ and last week's citations would resolve to nothing.
 
 ## Provenance that is missing is not provenance that is zero
 
-`docs/roadmap.md` rule 6, applied to a component that is not a statistic. A
+`docs/engineering-rules.md` rule 6, applied to a component that is not a statistic. A
 feed that declares no confidence has not declared low confidence — it has
 declared nothing — and the honest reading is that the claim cannot be a strong
 one. So an unprovenanced feed scores at `unprovenanced_confidence`, and an
@@ -84,7 +84,7 @@ second thing the host did.
 
 URL and file-hash indicators are parsed, indexed and counted, and nothing in
 this repository can match them yet — there is no HTTP log parser and no
-process telemetry until roadmap clusters 5 and 6. They are loaded anyway,
+process telemetry until the host and inventory work landed. They are loaded anyway,
 because the alternative is a parser that misreads them as domains, and
 `voidai doctor` reports them as inert so an operator is told rather than left
 to assume.

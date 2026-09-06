@@ -173,7 +173,7 @@ def tiny_capture(tmp_path: Path) -> Path:
     120 check-ins at 60s over two hours, which clears the beaconing analyzer's
     minimum count and its one-hour minimum span. A shorter capture parses and
     scores fine and finds nothing, which would make every assertion below
-    vacuously true — the failure mode roadmap rule 8 exists to prevent.
+    vacuously true — the failure mode engineering rule 8 exists to prevent.
     """
     rows = [
         _row(

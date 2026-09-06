@@ -34,7 +34,7 @@ evidence payload instead of being dropped.
 
 ## Why provenance is a field and not a nicety
 
-`docs/roadmap.md` §2: *stale intel is worse than none*. An indicator from 2019
+*Stale intel is worse than none.* An indicator from 2019
 firing on a residential address reassigned three years ago is a false positive
 with a confident citation attached — and a citation is the thing an analyst is
 least likely to re-check.

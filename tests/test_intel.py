@@ -596,7 +596,7 @@ class TestIdentity:
 
         This one guards reproducibility *within* a run. It does not catch a
         wall-clock age — two runs a second apart agree about today — and
-        pretending otherwise would make it the kind of test the roadmap's rule
+        pretending otherwise would make it the kind of test the engineering rule
         8 exists to prevent. `test_age_is_relative_to_the_capture_not_the_clock`
         below is the assertion that catches that, by requiring two captures
         ninety days apart to disagree by ninety days.

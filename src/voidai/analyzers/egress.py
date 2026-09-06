@@ -596,7 +596,7 @@ class EgressAnalyzer(BaseAnalyzer):
         """Keep each source's strongest band, then apply the caps.
 
         The band filter is what keeps this analyzer from corroborating itself
-        in `voidai.correlate`; the caps are rule 4 of the roadmap. The rare
+        in `voidai.correlate`; the caps are engineering rule 4. The rare
         band is capped separately and far more tightly, because it is the one
         that can run away over a large estate.
         """

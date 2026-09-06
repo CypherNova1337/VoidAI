@@ -19,7 +19,7 @@ signal that defines the verbs. On a single host, "rare" means "seen once",
 which is every process ever run; a lineage scored against a baseline of one
 machine is scored against nothing.
 
-That is roadmap rule 6 at its second level, and the answer is the same one
+That is engineering rule 6 at its second level, and the answer is the same one
 cluster 1 reached for `exfiltrates_to` on direction-blind NetFlow: **if the
 defining signal is unavailable, the verb is unsayable.** Unlike cluster 1
 there is no weaker predicate to fall back to — the Lexicon has no
@@ -84,7 +84,7 @@ spawned by an Office application on one.
 
 ## The two components that are not here
 
-**Command-line entropy.** The roadmap asked for command-line length and
+**Command-line entropy.** The design asked for command-line length and
 entropy. Entropy was measured against the real corpus and removed, for a
 reason that is not section 9's. Section 9 found entropy fails on
 6-to-20-character domain labels because at that length it measures length.
@@ -173,7 +173,7 @@ _Score = TypeVar("_Score", bound=_Scored)
 #: Directory prefixes any unprivileged user can write to. A graded *prior* over
 #: filesystem structure, in the same sense `destination_rarity` is a prior over
 #: prevalence — not a signature list, and it names no malware, no tool and no
-#: technique. Roadmap section 6 warns against a design drifting into a rule
+#: technique. The design notes warn against this drifting into a rule
 #: list; the test is whether the table grows when new attacks appear, and this
 #: one grows only when Windows does.
 _WRITABLE_PREFIXES = (
@@ -247,7 +247,7 @@ class HostConfig:
     #: Ceiling per host, applied first. A connection log's findings spread
     #: across an estate; a compromised machine can run thousands of distinct
     #: images by itself and would otherwise consume the whole budget alone.
-    #: This is roadmap rule 4 in the form this telemetry needs.
+    #: This is engineering rule 4 in the form this telemetry needs.
     max_findings_per_host: int = 5
     #: Executions sampled as artifacts per finding.
     artifact_samples: int = 3
@@ -722,7 +722,7 @@ class HostAnalyzer(BaseAnalyzer):
         The graph is the estate's observed lineage: one node per image name,
         one directed edge per parent→child relationship, weighted by how often
         it was seen. `P(child | parent)` comes off its out-strength, which is
-        the measurement the roadmap asks for — parent-to-child pairs scored
+        the measurement called for — parent-to-child pairs scored
         against observed frequency — expressed as the graph it is.
 
         `networkx` has been a core dependency since the beginning and this is
@@ -1012,7 +1012,7 @@ class HostAnalyzer(BaseAnalyzer):
     ) -> list[tuple[_Score, dict[str, object]]]:
         """Sort by score under a total order, then cap per host and overall.
 
-        Roadmap rule 12, and this telemetry is where it bites hardest: an
+        Engineering rule 12, and this telemetry is where it bites hardest: an
         estate of `svchost.exe` sits at an identical prevalence, and hundreds
         of command lines are byte-identical. With score alone as the key the
         `group_by` result order decides which findings survive the cap, and it

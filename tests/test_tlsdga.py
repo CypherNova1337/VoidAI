@@ -385,7 +385,7 @@ class TestTlsAnalyzer:
     def test_an_ssl_log_without_ja3_produces_nothing(self) -> None:
         """The stock-Zeek deployment. Silence, not a crash and not a finding.
 
-        This is the trap the cluster roadmap names: `ja3` comes from a Zeek
+        This is the known trap: `ja3` comes from a Zeek
         package, so the column is frequently absent.
         """
         corpus = TlsCorpusGenerator(seed=1337).generate()

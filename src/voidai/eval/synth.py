@@ -1805,7 +1805,7 @@ def _write_demo_inventory(directory: Path, start_epoch: float) -> Path:
     not corroborate each other. Nothing in this file is derived from the
     telemetry — an inventory is a statement an operator makes, and deriving one
     from observed traffic is a different piece of work with a different failure
-    mode (`docs/roadmap.md` §6).
+    mode.
 
     Deliberately a *partial* inventory: forty-odd source addresses appear in
     the capture and exactly one of them is named, so `voidai run` reports a

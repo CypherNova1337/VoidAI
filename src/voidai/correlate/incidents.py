@@ -103,7 +103,7 @@ class CorrelationConfig:
     #: multiplier is a claim that two *separate* things were seen.
     #:
     #: Three reasons put a predicate in this set, and all three are the same
-    #: rule at different levels — see roadmap rule 6.
+    #: rule at different levels — see engineering rule 6.
     #:
     #: `shares_infrastructure_with` and `precedes` describe the environment,
     #: or VoidAI's own reasoning about two observations. They are bookkeeping,
@@ -183,7 +183,7 @@ class CorrelationConfig:
     #: behaviours produce four `precedes` edges, each inheriting the
     #: confidence of a finding already counted.
     #:
-    #: The roadmap's warning for this cluster names the corroboration count,
+    #: The original warning named the corroboration count,
     #: and `precedes` was already kept out of that. The same circularity runs
     #: through the noisy-OR, which is the half that had no guard — and it is
     #: the same argument `docs/benchmarks.md` §8 makes for keeping observed
@@ -406,7 +406,7 @@ def _finding_order(
     domain family mints hundreds of names at an identical 1.0 — and with no
     total order the arrangement decides a content-addressed incident id.
     Reproducibility is a promise this project makes on its front page
-    (roadmap rule 12).
+    (engineering rule 12).
     """
     derived = finding.predicate in config.non_evidential
     when = (
@@ -451,7 +451,7 @@ def _attach_unary(
     exists to surface, and the single most actionable fact this system can
     produce, invisible.
 
-    Four decisions, all of them settled in roadmap §4 rather than here:
+    Four decisions, all settled before this was built rather than here:
 
     **Attach; do not re-subject.** `matches_threat_intel(ip:45.83.220.17)` is
     a true and well-formed proposition about the address. Rewriting it to take
@@ -632,7 +632,7 @@ def _precedes(
             "later_first_seen": _utc(later.first_seen).isoformat(),
             # The separation and the floor it cleared, so a reader can judge
             # the order for themselves rather than take it on trust. The
-            # roadmap asks for exactly this: sensors disagree, and how much
+            # design calls for exactly this: sensors disagree, and how much
             # they may disagree is the reader's call as much as ours.
             "separation_seconds": round(separation, 1),
             "min_separation_seconds": floor,
