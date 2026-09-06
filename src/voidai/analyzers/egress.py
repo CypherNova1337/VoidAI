@@ -803,7 +803,7 @@ class EgressAnalyzer(BaseAnalyzer):
             predicate=predicate,
             subject=ctx.actor(source),
             object=ctx.target(destination),
-            evidence=self._evidence(score, located),
+            evidence=[*self._evidence(score, located), *ctx.resolution_evidence(source)],
             confidence=round(score.score, 4),
             basis=score.basis(),
             severity=self._severity(predicate, score),

@@ -373,29 +373,50 @@ voidai demo
 ```
 
 Generates a capture in five real sensor formats — Zeek `conn.log`, Zeek
-`ssl.log`, passivedns, Suricata EVE, Sysmon JSON lines — runs the full
-pipeline, and puts the compromised host at the top of the queue. One host
-beacons, sweeps a port, tunnels DNS, resolves algorithmically generated
-domains, trips two rare signatures, runs a binary the estate has never run and
-lets an Office application spawn a shell; nothing in the data labels it. Under
-a second, no model, no GPU, no network.
+`ssl.log`, passivedns, Suricata EVE, Sysmon JSON lines — plus a one-line asset
+inventory, runs the full pipeline, and puts the compromised host at the top of
+the queue. One host beacons, sweeps a port, tunnels DNS, resolves
+algorithmically generated domains, trips two rare signatures, runs a binary the
+estate has never run and lets an Office application spawn a shell; nothing in
+the data labels it. Under a second, no model, no GPU, no network.
 
 ```
  #  Severity  Prio  Subject                    Behaviours                                          Findings
- 1  CRITICAL  2.50  ip:10.0.1.14               beacons_to, resolves_algorithmic_domain, scans, t…        10
- 2  HIGH      1.50  host:FINANCE-WS04          executes_rare_process, exhibits_anomalous_lineage          3
- 3  MEDIUM    0.98  host:WS019.contoso.local   executes_rare_process                                      1
- 4  CRITICAL  0.89  ip:10.0.1.23               tunnels_dns_over                                           1
- 5  HIGH      0.87  ip:10.0.1.17               beacons_to                                                 1
+ 1  CRITICAL  2.50  host:FINANCE-WS04          beacons_to, executes_rare_process, exhibits_anom…        13
+ 2  MEDIUM    0.98  host:WS019.contoso.local   executes_rare_process                                      1
+ 3  CRITICAL  0.89  ip:10.0.1.23               tunnels_dns_over                                           1
+ 4  HIGH      0.87  ip:10.0.1.17               beacons_to                                                 1
+ 5  HIGH      0.85  ip:10.0.1.13               beacons_to                                                 1
 ```
 
-**Rows 1 and 2 are the same machine, and that is a real limitation, not a
-generator quirk.** Sysmon records a computer name and no address, so the
-network sensors and the endpoint agent describe `10.0.1.14` and
-`FINANCE-WS04` without anything to join them. Joining them needs an asset
-inventory; `AnalysisContext.ip_to_host` is shaped for one and nothing yet
-populates it. Row 3 is the planted false positive — a legitimate installer,
-run once, from a user's Downloads folder — left in rather than tuned away.
+```
+inventory   1 of 1 mapping(s) applied — resolved 1 of 109 observed address(es) (0.9%)
+```
+
+**Row 1 is one machine because one line of a file says so.** Sysmon records a
+computer name and no address, so the network sensors and the endpoint agent
+describe `10.0.1.14` and `FINANCE-WS04` with nothing to join them; until this
+release the queue carried them as two incidents, ranked 2.50 and 1.50, neither
+corroborating the other. The capture now ships `assets.inv` with a single
+mapping, and the queue goes from ten incidents to nine with patient zero
+carrying seven corroborating behaviours instead of five and two. Every renamed
+finding cites the file and line that renamed it, along with how old that
+statement was when the traffic ran — see [docs/inventory.md](docs/inventory.md),
+because a mapping that is wrong attaches a beacon to an innocent machine with a
+clean chain of custody.
+
+The coverage figure is the second number that matters, and it is not
+flattering: one line names one address out of a hundred and nine the capture
+contains. That is the honest reading of a one-line inventory, and it is
+reported next to the mapping count precisely so an inventory covering 3% of an
+estate cannot be mistaken for one that covers it.
+
+Row 2 is the planted false positive — a legitimate installer, run once, from a
+user's Downloads folder — left in rather than tuned away. It was rank 3 before
+the inventory and it is rank 2 now, still above four genuine detections. That
+is the argument for the inventory stated more plainly than any figure above:
+the join did not make it a better false positive, it removed the duplicate row
+that was hiding how highly it already ranked.
 
 ## Installation
 
@@ -419,6 +440,7 @@ voidai run ./zeek-logs/ --model m.gguf   # add the narrative layer
 voidai run ./zeek-logs/ --no-llm        # detection only; findings are unchanged
 voidai run ./zeek-logs/ --evidence      # print the full evidence chain per finding
 voidai run ./zeek-logs/ --intel ./ioc/  # match local IOC files; read from disk, never fetched
+voidai run ./zeek-logs/ --inventory ./assets/  # name hosts from an asset inventory; read, never derived
 voidai hunt ./zeek-logs/                # ranked incidents → Sigma rules
 voidai hunt ./zeek-logs/ -d kql         # …or KQL, SPL, or a zeek-cut pipeline
 voidai hunt ./zeek-logs/ --out ./rules  # write one file per query
@@ -428,6 +450,7 @@ voidai demo                             # generate a capture and run everything
 voidai lexicon                          # print the complete grammar
 voidai doctor                           # pre-flight: platform, energy source, model
 voidai doctor --intel ./ioc/            # …and what the IOC files actually loaded
+voidai doctor --inventory ./assets/     # …and how much of the estate the inventory covers
 voidai doctor --telemetry ./logs/       # …and whether the estate can support a rarity claim
 voidai version                          # version and detected power profile
 ```
@@ -442,6 +465,8 @@ Every command prints a run receipt unless given `--no-receipt`.
   what real captures changed about the design
 - [`docs/ioc.md`](docs/ioc.md) — the local IOC file format, and why a match is
   scored from the feed's provenance rather than from the traffic
+- [`docs/inventory.md`](docs/inventory.md) — the asset inventory file format,
+  and why a mapping is judged against the capture's date rather than today's
 - [`docs/models.md`](docs/models.md) — supported open-weight models, and what a
   1.5B model got wrong before the prompt was fixed
 - [`docs/deployment.md`](docs/deployment.md) — Pi 5, Jetson and x86, including

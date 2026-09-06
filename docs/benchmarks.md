@@ -547,7 +547,9 @@ CRITICAL — the destination has been in use since the capture opened — but
 nothing available to this analyzer can take it to zero, because nothing in the
 telemetry says "backup server". This is the gap section 10 already records as
 open: **the estate has no identity.** An asset inventory demotes it in one
-step, and `AnalysisContext.ip_to_host` exists for exactly that.
+step, and `AnalysisContext.ip_to_host` exists for exactly that. Section 11½
+supplies the parser that fills it; naming a backup target is then a line an
+operator writes, not a change to this analyzer.
 
 The margin is 0.035, which is thin. It is not widened by moving the threshold:
 with no real corpus, tuning it would mean calibrating against a generator
@@ -1791,6 +1793,9 @@ populates it — the same gap section 12 names for demoting a gateway, arriving
 from a second direction. It is one small parser and it is deliberately not in
 this branch.
 
+*Since collected.* Section 11½ ships that parser, and the split above closes:
+one row, seven behaviours, on the same capture.
+
 **`networkx` earned its place, in two ways, after eight commits of being a
 dependency one analyzer used for connected components.** The estate's observed
 lineage is a directed graph and the conditional frequency comes off its
@@ -1817,6 +1822,98 @@ second — which is the correlator's floor for ordering two behaviours from a
 single source. Taking `@timestamp` would not have blurred an ordering. It
 would have invented one, in the predicate cluster 4 built specifically to
 avoid that.
+
+---
+
+## 11½. The asset inventory — a join, not a detector
+
+**Nothing here is detected and nothing here is scored.** Rule 7 applies to
+this section in its strongest form: the input is a file an operator wrote, the
+output is a subject named more precisely, and there is no ground truth to be
+right or wrong about. The correctness questions are whether the join picks the
+right mapping, whether it degrades honestly when the file is stale or partial,
+and whether it changes nothing at all when there is no file. `voidai bench`
+reports no accuracy figure for it because it has none to report.
+
+### What one line did to the demo capture
+
+The capture now ships `assets.inv` carrying a single mapping,
+`10.0.1.14 -> FINANCE-WS04`, dated four days before the traffic starts:
+
+| | Before | After |
+|---|---|---|
+| Patient zero | two rows: `ip:10.0.1.14` with 5 behaviours, `host:FINANCE-WS04` with 2 | one row: `host:FINANCE-WS04` with **7** |
+| Priority | 2.50 and 1.50 | 2.50 |
+| Findings on that row | 10 and 3 | 13 |
+| Incidents in the queue | 10 | 9 |
+| Corroborated incidents | 2 | 1 |
+
+The seven are `beacons_to`, `scans`, `tunnels_dns_over`,
+`resolves_algorithmic_domain`, `triggered_signature`, `executes_rare_process`
+and `exhibits_anomalous_lineage` — network and host evidence corroborating on
+one machine, which is what section 11 was ranked highest for and did not get.
+
+Corroborated incidents falling from two to one is the join working, not a
+regression: the two rows that each corroborated internally were one machine,
+and merging them leaves one corroborated incident rather than two.
+
+### The false positive moved up, and stays
+
+`host:WS019.contoso.local` — a legitimate installer, run once, from a user's
+Downloads folder — was rank 3 and is now rank 2, above four genuine
+detections. It has not been tuned away and it has not got worse. Removing the
+duplicate row above it simply stopped hiding how highly it already ranked,
+which is a more useful thing for this page to say than a queue that reads
+tidily.
+
+### Coverage, which is the number that is not flattering
+
+```
+inventory   1 of 1 mapping(s) applied — resolved 1 of 109 observed address(es) (0.9%)
+```
+
+One line names one address out of the hundred and nine the capture contains.
+The receipt and `voidai doctor` both report the fraction rather than the
+mapping count alone, because an inventory covering 3% of an estate is a
+rounding error dressed as an improvement and a count cannot tell the two
+apart.
+
+### No inventory, no change — asserted rather than assumed
+
+The CTU-13 captures ship no `.inv` file, so this cluster must be a no-op on
+them. That is not left to inspection: `tests/test_inventory.py` asserts that
+findings produced with an empty inventory, with an inventory naming no address
+in the capture, and with none at all are **byte-identical by
+content-addressed ID** to those produced before this module existed, and that
+an inventory which renames one host leaves every other finding's ID untouched.
+Scenario 3 (rank 2 of 247, 3 corroborated) and scenario 6 (rank 1 of 160, 1
+corroborated) are therefore expected to reproduce exactly; if either moves,
+the join has reached something it should not have.
+
+Findings whose subject came from host telemetry rather than from an address —
+`host:FINANCE-WS04 executes_rare_process`, asserted from Sysmon's computer
+name — never resolve anything, never cite the inventory, and keep their IDs
+whether or not a file is present. That is structural: those call sites do not
+call `actor()`, so they cannot call `resolution_evidence()` either. A test
+asserts it anyway, because it is a property worth pinning rather than a
+workaround worth remembering.
+
+### What a resolved finding now carries
+
+```
+ev_40e77cfeeadfa8  10.0.1.14 is FINANCE-WS04, per corp-asset-register
+                   (stated 2025-06-11, 4d before the capture)
+    /captures/demo/assets.inv:line:6
+```
+
+The mapping is a link in the chain of custody, not a lookup performed off to
+one side. Its payload carries the address, the hostname, the register, the
+date stated, the capture's start, the age in days and a staleness verdict, and
+its artifact is the file and line an analyst can open. A mapping older than
+730 days is not applied at all; one older than 90 days is applied and flagged;
+one stated *after* the capture is applied and flagged too, which is the case
+most likely to pass unexamined because a recent file reads as the safe kind.
+`docs/inventory.md` states the ladder in full.
 
 ---
 
@@ -1871,6 +1968,15 @@ inventory would demote the gateway, demote the backup target and join those
 two rows, all in one step. `AnalysisContext.ip_to_host` is already shaped for
 it and nothing populates it; it is one small parser and the highest-value one
 left on this list.
+
+*Now written — section 11½.* The third face is closed: patient zero is one row
+carrying seven behaviours. The first two are not, and the reason is worth
+stating, because it is the same reason in both cases and it is not a missing
+feature. Demoting a gateway and demoting a backup target need an operator to
+say which machines those are; the parser reads such a statement and nothing in
+this repository will invent one. An inventory covering 0.9% of the demo estate
+demonstrates the join and closes none of the ranking gaps on its own, which is
+why coverage is now reported next to the mapping count.
 
 **The DGA character model has never seen a non-English estate.** Its word
 list is English, so a German or Turkish second-level label reads as

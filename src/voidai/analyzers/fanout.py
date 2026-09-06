@@ -223,7 +223,7 @@ class FanoutAnalyzer(BaseAnalyzer):
             predicate=Predicate.SCANS,
             subject=ctx.actor(str(row["src_ip"])),
             object=Entity(type=EntityType.PORT, value=str(row["dst_port"])),
-            evidence=[evidence],
+            evidence=[evidence, *ctx.resolution_evidence(str(row["src_ip"]))],
             confidence=round(score.score, 4),
             basis=score.basis(),
             severity=(

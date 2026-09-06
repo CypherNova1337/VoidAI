@@ -23,12 +23,14 @@ from voidai.ingest import (
     load_processes,
     load_ssl,
 )
+from voidai.ingest.inventory import load_inventory
 from voidai.lexicon import Finding
 
 PATIENT_ZERO = "10.0.1.14"
 #: The same machine, as the endpoint agent names it. Sysmon records a computer
-#: name and no address, so until an asset inventory exists the two are separate
-#: subjects and separate incidents — see `docs/benchmarks.md` section 12.
+#: name and no address; the capture ships one line of asset inventory to say
+#: that these are one machine, and the queue carries one row for it as a
+#: result — see `docs/benchmarks.md` section 11½.
 PATIENT_ZERO_HOST = "FINANCE-WS04"
 
 
@@ -49,6 +51,9 @@ def queue(capture: Path):  # type: ignore[no-untyped-def]
         alerts=load_alerts(capture),
         ssl=load_ssl(capture),
         processes=load_processes(capture),
+        # The capture ships an `assets.inv`, and `_detect` reads it. A fixture
+        # that skipped it would analyse a capture the product never sees.
+        inventory=load_inventory(capture),
     )
     findings: list[Finding] = []
     for analyzer in DEFAULT_ANALYZERS:
@@ -66,7 +71,17 @@ class TestDemoCapture:
             "ssl.log",
             "eve.json",
             "sysmon.jsonl",
+            "assets.inv",
         } <= names
+
+    def test_the_shipped_inventory_is_one_dated_mapping(self, capture: Path) -> None:
+        """One line, and dated. A partial inventory is the honest demo — the
+        coverage figure it produces is under 1% and that is the point."""
+        inventory = load_inventory(capture)
+        assert len(inventory) == 1
+        mapping = inventory.by_address[PATIENT_ZERO]
+        assert mapping.hostname == PATIENT_ZERO_HOST
+        assert mapping.stated is not None
 
     def test_every_file_parses_through_a_production_parser(self, capture: Path) -> None:
         """The demo must not bypass the parsers it is demonstrating."""
@@ -80,7 +95,14 @@ class TestDemoCapture:
 
 class TestDemoDetection:
     def test_patient_zero_ranks_first(self, queue) -> None:  # type: ignore[no-untyped-def]
-        assert queue.rank_of(PATIENT_ZERO) == 1
+        """And by its hostname, because the inventory named it.
+
+        `ip:10.0.1.14` is no longer a subject at all: the address resolved, so
+        every finding measured from it asserts the machine rather than the
+        address it happened to hold.
+        """
+        assert queue.rank_of(PATIENT_ZERO_HOST) == 1
+        assert queue.rank_of(PATIENT_ZERO) is None
 
     def test_every_independent_behaviour_corroborates(self, queue) -> None:  # type: ignore[no-untyped-def]
         top = queue.incidents[0]
@@ -91,6 +113,8 @@ class TestDemoDetection:
             "tunnels_dns_over",
             "triggered_signature",
             "resolves_algorithmic_domain",
+            "executes_rare_process",
+            "exhibits_anomalous_lineage",
         }
 
     def test_the_rare_fingerprint_is_reported_but_does_not_corroborate(self, queue) -> None:  # type: ignore[no-untyped-def]
@@ -111,10 +135,9 @@ class TestDemoDetection:
     def test_priority_clears_the_field(self, queue) -> None:  # type: ignore[no-untyped-def]
         """Corroboration must be visible, not a hair's breadth.
 
-        Measured against the highest-ranked incident that is *not* the
-        compromised machine. Patient zero now occupies two rows — one per
-        identity, until an asset inventory joins them — and comparing the
-        first against the second would compare it against itself.
+        Measured against the highest-ranked incident that is not the
+        compromised machine, which since the inventory landed is simply the
+        second row.
         """
         top = queue.incidents[0]
         others = [
@@ -126,34 +149,59 @@ class TestDemoDetection:
 
     def test_alert_flood_is_suppressed(self, queue) -> None:  # type: ignore[no-untyped-def]
         """55 hosts trip policy rules thousands of times and reach no incident."""
-        noisy = [r for r in queue.incidents if r.subject.value != PATIENT_ZERO]
+        noisy = [r for r in queue.incidents if r.subject.value != PATIENT_ZERO_HOST]
         assert all(
             "triggered_signature" not in {p.value for p in r.corroborating_predicates}
             for r in noisy
         )
 
-    def test_the_endpoint_sees_a_second_incident_on_the_same_machine(self, queue) -> None:  # type: ignore[no-untyped-def]
-        """Two host behaviours, corroborating each other and nothing else.
+    def test_the_endpoint_and_the_network_land_on_one_machine(self, queue) -> None:  # type: ignore[no-untyped-def]
+        """The payoff cluster 5 was ranked for and did not collect.
 
-        This is the cluster's payoff and its limitation in one row. The
-        endpoint agent sees a binary the estate has never run *and* an Office
-        application spawning a shell, which corroborate: two independent
-        things one machine did.
+        The endpoint agent sees a binary the estate has never run and an Office
+        application spawning a shell. The network sensors see a beacon, a port
+        sweep, a DNS tunnel, a generated domain and two rare signatures. Sysmon
+        records a computer name and no address, so until one line of a file
+        said they were the same machine these were two incidents that did not
+        corroborate each other, ranked 2.50 and 1.50.
 
-        They do not corroborate the five network behaviours on the same
-        machine, because nothing joins `10.0.1.14` to `FINANCE-WS04` — Sysmon
-        records a computer name and no address. Asserted rather than left
-        implicit, so that adding an asset inventory later shows up here as a
-        failing test rather than as a silent change in the queue.
+        Seven corroborating behaviours on one subject is that line working.
+        Asserted here rather than left to the queue, so that a change which
+        splits them again is a failing test rather than a quieter demo.
         """
-        rank = queue.rank_of(PATIENT_ZERO_HOST)
-        assert rank is not None
-        ranked = queue.incidents[rank - 1]
-        assert {p.value for p in ranked.corroborating_predicates} == {
-            "executes_rare_process",
-            "exhibits_anomalous_lineage",
-        }
-        assert queue.rank_of(PATIENT_ZERO) != rank
+        assert queue.rank_of(PATIENT_ZERO) is None
+        top = queue.incidents[0]
+        assert top.subject.value == PATIENT_ZERO_HOST
+        assert len(top.corroborating_predicates) == 7
+
+    def test_every_renamed_finding_cites_the_line_that_renamed_it(self, queue) -> None:  # type: ignore[no-untyped-def]
+        """A wrong mapping attaches a beacon to an innocent machine with a
+        clean chain of custody. The chain therefore carries the mapping."""
+        top = queue.incidents[0]
+        network = [
+            f
+            for f in top.incident.findings
+            if f.predicate.value in {"beacons_to", "scans", "tunnels_dns_over"}
+        ]
+        assert network
+        for finding in network:
+            cited = [e for e in finding.evidence if e.kind == "asset_inventory"]
+            assert len(cited) == 1, finding.sentence()
+            assert cited[0].payload["address"] == PATIENT_ZERO
+            assert cited[0].payload["staleness"] == "current"
+            assert cited[0].artifacts[0].source.endswith("assets.inv")
+
+    def test_a_sysmon_finding_cites_nothing_it_did_not_use(self, queue) -> None:  # type: ignore[no-untyped-def]
+        """`host.py` names the machine from Sysmon's computer name and never
+        resolves an address, so it must not carry the inventory's citation."""
+        top = queue.incidents[0]
+        host_findings = [
+            f
+            for f in top.incident.findings
+            if f.predicate.value in {"executes_rare_process", "exhibits_anomalous_lineage"}
+        ]
+        assert host_findings
+        assert not [e for f in host_findings for e in f.evidence if e.kind == "asset_inventory"]
 
     def test_the_host_estate_is_large_enough_to_be_measured(self, capture: Path) -> None:
         """The demo must demonstrate the detector, not the gate.
@@ -212,6 +260,28 @@ class TestTheCommandItself:
             f"# name: demo-fixture\n# confidence: 0.9\n# updated: 2025-06-01\n{PATIENT_ZERO}\n"
         )
         args = [command, str(capture), "--intel", str(tmp_path), "--no-receipt"]
+        if command == "run":
+            args.append("--no-llm")
+        result = CliRunner().invoke(cli.app, args)
+        assert result.exit_code == 0, result.output
+
+    @pytest.mark.parametrize("command", ["run", "hunt"])
+    def test_the_pipeline_commands_accept_an_inventory_path(
+        self, command: str, capture: Path, tmp_path: Path
+    ) -> None:
+        """`--inventory` reaches the join from both commands that detect.
+
+        Same reasoning as `--intel` above: they share `_detect`, and a wiring
+        mistake in one is invisible from the other.
+        """
+        from typer.testing import CliRunner
+
+        from voidai import cli
+
+        (tmp_path / "operator.inv").write_text(
+            f"# name: demo-fixture\n# updated: 2025-06-01\n{PATIENT_ZERO}  FINANCE-WS04\n"
+        )
+        args = [command, str(capture), "--inventory", str(tmp_path), "--no-receipt"]
         if command == "run":
             args.append("--no-llm")
         result = CliRunner().invoke(cli.app, args)

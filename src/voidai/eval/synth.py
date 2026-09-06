@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import ClassVar
 
@@ -772,12 +772,11 @@ _ABBREVIATED_LABELS = (
 _PATIENT_ZERO = "10.0.1.14"
 
 #: The same machine, named. Host telemetry has no IP to key on — Sysmon event
-#: ID 1 records a computer name and nothing else — so the demo's compromised
-#: host appears in the queue twice: once as `ip:10.0.1.14` for everything the
-#: network sensors saw, and once as `host:FINANCE-WS04` for what the endpoint
-#: agent saw. Joining them needs an asset inventory mapping addresses to
-#: hostnames, which `AnalysisContext.ip_to_host` is already shaped for and
-#: nothing yet populates. See `docs/benchmarks.md` section 11.
+#: ID 1 records a computer name and nothing else — so without an inventory the
+#: demo's compromised host appears in the queue twice: once as `ip:10.0.1.14`
+#: for everything the network sensors saw, and once as `host:FINANCE-WS04` for
+#: what the endpoint agent saw. The capture ships the one mapping that joins
+#: them; see `_write_demo_inventory` below and `docs/inventory.md`.
 _PATIENT_ZERO_HOST = "FINANCE-WS04"
 
 
@@ -1792,4 +1791,48 @@ def build_demo_capture(directory: str | Path, seed: int = 1337) -> Path:
             )
     write_eve_json(directory / "eve.json", alerts)
 
+    _write_demo_inventory(directory, start)
+
     return directory
+
+
+def _write_demo_inventory(directory: Path, start_epoch: float) -> Path:
+    """Ship the one asset mapping that joins the two halves of patient zero.
+
+    One line, and it is the whole demonstration: the network sensors report an
+    address and the endpoint agent reports a computer name, and until something
+    states that they are the same machine the queue carries two rows that do
+    not corroborate each other. Nothing in this file is derived from the
+    telemetry — an inventory is a statement an operator makes, and deriving one
+    from observed traffic is a different piece of work with a different failure
+    mode (`docs/roadmap.md` §6).
+
+    Deliberately a *partial* inventory: forty-odd source addresses appear in
+    the capture and exactly one of them is named, so `voidai run` reports a
+    coverage in the low single figures. That is the honest number for an
+    inventory of one line and it is the figure an operator needs to see, rather
+    than a mapping count that would read like completeness.
+
+    Dated four days before the capture starts, which is what a register
+    reconciled the week before an incident looks like — recent enough that
+    `docs/inventory.md`'s staleness ladder leaves it unflagged, and dated at
+    all so the demo does not quietly exercise the undated path.
+    """
+    stated = datetime.fromtimestamp(start_epoch, tz=timezone.utc).date() - timedelta(days=4)
+    path = directory / "assets.inv"
+    path.write_text(
+        "\n".join(
+            (
+                "# name: corp-asset-register",
+                "# source: netbox export, finance floor",
+                f"# updated: {stated.isoformat()}",
+                "# tlp: amber",
+                "",
+                f"{_PATIENT_ZERO:<12} {_PATIENT_ZERO_HOST:<14} "
+                f"stated={stated.isoformat()}  note=static lease, finance floor",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    return path

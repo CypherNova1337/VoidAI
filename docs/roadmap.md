@@ -696,6 +696,40 @@ and deliberately not minted.
 
 ## 6 · Asset inventory — `analyzer-inventory`
 
+> **Done.** `src/voidai/ingest/inventory.py`, `--inventory` on `run`, `hunt`
+> and `doctor`, the format documented in `docs/inventory.md`, and the demo
+> capture shipping one mapping. No new analyzer, no line in
+> `DEFAULT_ANALYZERS`, no change to `correlate/incidents.py`, no new
+> predicate, no Lexicon change. Seven call sites gained one term each, beside
+> the `actor()` call they belong to.
+>
+> The measurement below reproduced exactly: patient zero collapses from two
+> rows (5 and 2 behaviours, 2.50 and 1.50) to one row carrying **seven**, and
+> the queue from ten incidents to nine. Coverage on that capture is 1 of 109
+> observed addresses — 0.9% — reported next to the mapping count in the
+> receipt and in `doctor`, because the count alone cannot tell a complete
+> inventory from a rounding error.
+>
+> The 7-Zip false positive moved from rank 3 to rank 2 and is still above four
+> genuine detections. It has not been tuned; removing the duplicate row above
+> it stopped hiding how highly it already ranked.
+>
+> **Validation is entirely synthetic and nothing here is detected** (rule 7):
+> the correctness questions are whether the join picks the right mapping and
+> whether a stale or partial inventory degrades honestly. The CTU-13 captures
+> ship no `.inv`, and `tests/test_inventory.py` asserts the no-op by
+> content-addressed ID rather than by inspection.
+>
+> Two things the specification did not ask for, added because trap 2 demands
+> them. A mapping stated more than 730 days before the capture is **not
+> applied at all**, mirroring `docs/ioc.md`'s floor. And a mapping stated
+> *after* the capture is flagged as well as an old one — it is the sharper
+> case, because a fresh file reads as the safe kind and a reader checking
+> provenance sees a recent date and stops, while it says nothing reliable
+> about who held that address when the traffic ran.
+>
+> `docs/benchmarks.md` §11½ for the figures.
+
 Not an analyzer at all, and the highest ratio of value to lift left on this
 list. **One parser. No correlator change, no Lexicon change, no new
 predicate.**

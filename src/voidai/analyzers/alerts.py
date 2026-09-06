@@ -345,7 +345,7 @@ class AlertTriageAnalyzer(BaseAnalyzer):
             predicate=Predicate.TRIGGERED_SIGNATURE,
             subject=ctx.actor(str(row["src_ip"])),
             object=Entity(type=EntityType.SIGNATURE, value=str(row["signature"])),
-            evidence=[evidence],
+            evidence=[evidence, *ctx.resolution_evidence(str(row["src_ip"]))],
             confidence=round(score.score, 4),
             basis=score.basis(),
             # Deliberately capped at MEDIUM. A signature firing is corroborating

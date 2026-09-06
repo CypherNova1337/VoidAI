@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import polars as pl
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -22,6 +23,13 @@ from voidai.analyzers import DEFAULT_ANALYZERS, AnalysisContext, HostConfig, Tls
 from voidai.analyzers.host import estate_baseline, host_summary
 from voidai.correlate import IncidentQueue, build_queue
 from voidai.hunt import Dialect, queries_for_incident
+from voidai.ingest.inventory import (
+    INVENTORY_SUFFIX,
+    CaptureWindow,
+    Coverage,
+    Inventory,
+    load_inventory,
+)
 from voidai.ingest.ioc import IOC_SUFFIX, load_indicators
 from voidai.ingest.passivedns import load_passivedns
 from voidai.ingest.suricata import load_alerts
@@ -235,6 +243,12 @@ def _render_receipt(receipt: RunReceipt) -> None:
                 f"{receipt.reasoning.joules:.0f} J ({receipt.tokens.total} tokens)",
             )
 
+    if receipt.inventory is not None:
+        # Coverage, not a mapping count. `docs/roadmap.md` §6: an inventory
+        # covering 3% of an estate is a rounding error dressed as an
+        # improvement, and the count on its own cannot say which this is.
+        table.add_row("inventory", escape(receipt.inventory.summary()))
+
     table.add_row("memory", f"{receipt.peak_rss_mb:.0f} MB peak")
     table.add_row(
         "tokens",
@@ -251,9 +265,35 @@ def _render_receipt(receipt: RunReceipt) -> None:
     console.print(table)
 
 
+def _observed_addresses(ctx: AnalysisContext) -> set[str]:
+    """Every distinct source address the capture contains.
+
+    The denominator for inventory coverage, and it is the source side only
+    because that is the side `actor()` is ever asked to name. Counting
+    destinations too would divide by the internet and report a coverage of
+    nought point nothing for a complete inventory.
+
+    One streaming pass per source, taken only when an inventory is loaded.
+    """
+    addresses: set[str] = set()
+    for scan in (ctx.connection_scan(), ctx.dns_scan(), ctx.alert_scan(), ctx.ssl_scan()):
+        column = scan.select(pl.col("src_ip").unique()).collect(engine="streaming")
+        if column.height:
+            addresses.update(str(value) for value in column.to_series() if value)
+    return addresses
+
+
+def _inventory_coverage(ctx: AnalysisContext) -> Coverage | None:
+    """What the loaded inventory reached, or `None` if none was loaded."""
+    if ctx.inventory.is_empty():
+        return None
+    return ctx.inventory.coverage(ctx.capture, _observed_addresses(ctx))
+
+
 def _detect(
     path: Path,
     intel: Path | None = None,
+    inventory: Path | None = None,
 ) -> tuple[AnalysisContext, list[Finding], IncidentQueue]:
     """Ingest, analyse and rank. The whole model-free pipeline, in one place.
 
@@ -279,6 +319,12 @@ def _detect(
     # Indicators are read from files and never retrieved. Absent by default:
     # `*.ioc` alongside the telemetry, or wherever `--intel` points.
     indicators = load_indicators(intel or path)
+    # Asset mappings, on the same terms: `*.inv` alongside the telemetry or
+    # wherever `--inventory` points, read and never derived. Applying it is
+    # `AnalysisContext`'s job rather than this function's, so that `voidai
+    # bench` — which builds its own context and never calls `_detect` — joins
+    # identically and produces the same content-addressed IDs.
+    assets = load_inventory(inventory or path)
     ctx = AnalysisContext(
         connections=connections,
         dns=dns,
@@ -286,6 +332,7 @@ def _detect(
         ssl=ssl,
         processes=processes,
         indicators=indicators,
+        inventory=assets,
     )
 
     # Driven from DEFAULT_ANALYZERS so `voidai doctor` cannot report a set
@@ -319,6 +366,11 @@ def run(
         "--intel",
         help=f"Directory or file of local {IOC_SUFFIX} indicators. Read, never fetched.",
     ),
+    inventory: Path | None = typer.Option(
+        None,
+        "--inventory",
+        help=f"Directory or file of {INVENTORY_SUFFIX} asset mappings. Read, never derived.",
+    ),
 ) -> None:
     """Run the detection pipeline over a directory of telemetry."""
     if not path.exists():
@@ -328,10 +380,11 @@ def run(
     run_receipt = RunReceipt()
 
     with EnergyMeter() as meter:
-        ctx, findings, queue = _detect(path, intel)
+        ctx, findings, queue = _detect(path, intel, inventory)
 
     run_receipt.records_ingested = ctx.record_count()
     run_receipt.findings_emitted = len(findings)
+    run_receipt.inventory = _inventory_coverage(ctx)
     run_receipt.finalize(meter.reading)
 
     if run_receipt.records_ingested == 0:
@@ -593,6 +646,11 @@ def hunt(
         "--intel",
         help=f"Directory or file of local {IOC_SUFFIX} indicators. Read, never fetched.",
     ),
+    inventory: Path | None = typer.Option(
+        None,
+        "--inventory",
+        help=f"Directory or file of {INVENTORY_SUFFIX} asset mappings. Read, never derived.",
+    ),
 ) -> None:
     """Turn ranked incidents into queries you can run in a SIEM.
 
@@ -611,9 +669,10 @@ def hunt(
 
     run_receipt = RunReceipt()
     with EnergyMeter() as meter:
-        ctx, findings, queue = _detect(path, intel)
+        ctx, findings, queue = _detect(path, intel, inventory)
     run_receipt.records_ingested = ctx.record_count()
     run_receipt.findings_emitted = len(findings)
+    run_receipt.inventory = _inventory_coverage(ctx)
     run_receipt.finalize(meter.reading)
 
     if run_receipt.records_ingested == 0:
@@ -759,6 +818,90 @@ def demo(
         model=model,
         explain=explain,
         intel=None,
+        inventory=None,
+    )
+
+
+def _inventory_row(table: Table, inventory: Path | None, telemetry: Path | None) -> None:
+    """Report what an inventory path actually loaded, and how far it reaches.
+
+    Two numbers, because either alone misleads. A mapping count says nothing
+    about whether the estate in front of you is covered, and a coverage
+    percentage says nothing about how many statements were thrown away for
+    being too old to trust. `docs/roadmap.md` §6 asks for both.
+    """
+    if inventory is None:
+        table.add_row(
+            "inventory",
+            f"[dim]none given — pass --inventory to check {INVENTORY_SUFFIX} files[/dim]",
+        )
+        return
+
+    if not inventory.exists():
+        table.add_row("inventory", f"[red]not found:[/red] {escape(str(inventory))}")
+        return
+
+    assets = load_inventory(inventory)
+    if assets.is_empty():
+        table.add_row(
+            "inventory",
+            f"[yellow]no mappings[/yellow] — "
+            f"{len(assets.registers)} {INVENTORY_SUFFIX} file(s) read",
+        )
+        _inventory_rejects(table, assets)
+        return
+
+    # Age is judged against the capture, never the clock, so without telemetry
+    # to date there is no window and every mapping is reported unjudged rather
+    # than judged against today. Saying so is the point: the same inventory
+    # can be current for one capture and expired for another.
+    window = CaptureWindow()
+    observed: set[str] = set()
+    if telemetry is not None and telemetry.exists():
+        ctx = AnalysisContext(
+            connections=load_connections(telemetry),
+            dns=load_dns(telemetry),
+            alerts=load_alerts(telemetry),
+            ssl=load_ssl(telemetry),
+            inventory=assets,
+        )
+        window, observed = ctx.capture, _observed_addresses(ctx)
+
+    coverage = assets.coverage(window, observed)
+    table.add_row("inventory", f"[green]{escape(coverage.summary())}[/green]")
+    if telemetry is None:
+        table.add_row(
+            "",
+            "[dim]coverage and staleness need a capture to measure against: pass --telemetry[/dim]",
+        )
+
+    # With no window there is nothing to judge against, and listing every
+    # mapping as "unknown window" would repeat the line above once per row.
+    flagged = assets.flagged(window) if window.known else []
+    for mapping, state in flagged[:5]:
+        colour = "red" if state == "expired" else "yellow"
+        table.add_row(
+            "",
+            f"[{colour}]{escape(state.replace('_', ' '))}[/{colour}] "
+            f"[dim]{escape(mapping.address)} -> {escape(mapping.hostname)}, "
+            f"{escape(mapping.register.name)}[/dim]",
+        )
+    _inventory_rejects(table, assets)
+
+
+def _inventory_rejects(table: Table, assets: Inventory) -> None:
+    """Show the first unparseable line, as written.
+
+    One fat-fingered entry must not cost the other three hundred and
+    ninety-nine, and an operator cannot fix a line they are not shown.
+    """
+    if not assets.rejected:
+        return
+    path, number, text = assets.rejected[0]
+    table.add_row(
+        "",
+        f"[yellow]{len(assets.rejected)} line(s) rejected[/yellow] "
+        f"[dim]— first at {escape(path)}:{number}: {escape(text)}[/dim]",
     )
 
 
@@ -918,6 +1061,11 @@ def doctor(
     intel: Path | None = typer.Option(
         None, "--intel", help=f"Directory or file of local {IOC_SUFFIX} indicators to check."
     ),
+    inventory: Path | None = typer.Option(
+        None,
+        "--inventory",
+        help=f"Directory or file of {INVENTORY_SUFFIX} asset mappings to check.",
+    ),
     telemetry: Path | None = typer.Option(
         None,
         "--telemetry",
@@ -983,6 +1131,7 @@ def doctor(
         table.add_row("model", "[dim]none given — pass --model to check one[/dim]")
 
     _intel_row(table, intel)
+    _inventory_row(table, inventory, telemetry)
     _tls_row(table, telemetry)
     _host_row(table, telemetry)
 

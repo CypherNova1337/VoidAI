@@ -18,6 +18,8 @@ from typing import Protocol, runtime_checkable
 
 import polars as pl
 
+from voidai.ingest.inventory import CaptureWindow, Inventory
+from voidai.ingest.inventory import resolution_evidence as _resolution_evidence
 from voidai.ingest.ioc import IndicatorSet
 from voidai.ingest.schema import (
     ALERT_SCHEMA,
@@ -27,7 +29,7 @@ from voidai.ingest.schema import (
     SSL_SCHEMA,
     empty,
 )
-from voidai.lexicon import Entity, EntityType, Finding
+from voidai.lexicon import Entity, EntityType, Evidence, Finding
 
 Frame = pl.DataFrame | pl.LazyFrame
 
@@ -80,14 +82,69 @@ class AnalysisContext:
     #: fetched. See `voidai.ingest.ioc`.
     indicators: IndicatorSet = field(default_factory=IndicatorSet)
 
+    #: Asset mappings the operator placed on disk. Empty unless an inventory
+    #: file was found, and empty is the normal case: an inventory is optional,
+    #: and a run without one names its subjects by address. Loaded from
+    #: *files*, never derived — not from DHCP, not from reverse DNS, not from
+    #: the traffic. See `voidai.ingest.inventory`.
+    inventory: Inventory = field(default_factory=Inventory)
+
+    #: When the telemetry was recorded. Measured from the sources above when
+    #: an inventory is present and left unknown otherwise, because a mapping's
+    #: age is judged against the capture rather than against the clock and
+    #: nothing else here needs the figure.
+    capture: CaptureWindow = field(default_factory=CaptureWindow)
+
     #: Reverse-resolution built from observed DNS answers: ip -> domain.
     ip_to_domain: dict[str, str] = field(default_factory=dict)
-    #: Optional asset inventory: ip -> hostname.
+    #: Asset inventory as `actor()` consumes it: ip -> hostname. Populated
+    #: from `inventory` at construction, and settable directly by a caller
+    #: that has a map from somewhere else. A directly supplied entry wins, and
+    #: carries no `resolution_evidence` — there is no file to cite.
     ip_to_host: dict[str, str] = field(default_factory=dict)
 
     #: Records scanned, when the caller already knows. Avoids a counting pass
     #: over a lazy source purely to fill in a receipt.
     known_record_count: int | None = None
+
+    def __post_init__(self) -> None:
+        """Apply the inventory, once, where every consumer sees the same result.
+
+        Here rather than in the CLI because `voidai bench` and every library
+        caller build a context directly and never touch `cli._detect`. A join
+        performed on one path and not the other would give two
+        content-addressed IDs for one finding over one capture, which is the
+        reproducibility promise this project makes on its front page.
+        """
+        if self.inventory.is_empty():
+            return
+        if not self.capture.known:
+            self.capture = self._observed_window()
+        for address, hostname in self.inventory.applied(self.capture).items():
+            self.ip_to_host.setdefault(address, hostname)
+
+    def _observed_window(self) -> CaptureWindow:
+        """First and last timestamp across every timestamped source.
+
+        Costs one streaming min/max pass per source and is taken only when an
+        inventory is actually loaded, so a run without one pays nothing.
+        """
+        first: float | None = None
+        last: float | None = None
+        for frame in (self.connections, self.dns, self.alerts, self.ssl, self.processes):
+            bounds = (
+                self._scan(frame)
+                .select(pl.col("ts").min().alias("lo"), pl.col("ts").max().alias("hi"))
+                .collect(engine="streaming")
+            )
+            if not bounds.height:
+                continue
+            low, high = bounds.row(0)
+            if low is not None:
+                first = float(low) if first is None else min(first, float(low))
+            if high is not None:
+                last = float(high) if last is None else max(last, float(high))
+        return CaptureWindow.from_epochs(first, last)
 
     @staticmethod
     def _scan(frame: Frame) -> pl.LazyFrame:
@@ -138,6 +195,36 @@ class AnalysisContext:
         if hostname:
             return Entity(type=EntityType.HOST, value=hostname)
         return Entity(type=EntityType.IP, value=ip)
+
+    def resolution_evidence(self, ip: str) -> list[Evidence]:
+        """Provenance for the rename `actor()` just performed, if it did one.
+
+        Spread into the evidence list at the call site, beside the `actor()`
+        call it belongs to:
+
+            subject=ctx.actor(src),
+            evidence=[*self._evidence(score, artifacts), *ctx.resolution_evidence(src)],
+
+        Empty when the address did not resolve, so the term is inert without an
+        inventory and the ID of an unresolved finding is byte-identical to what
+        it was before this method existed. An analyzer that names a host from
+        telemetry rather than from an address never calls it and so cannot pick
+        up a citation it did not rely on.
+
+        A finding that names `host:FINANCE-WS04` asserts something no sensor
+        said. `docs/roadmap.md` §6: a wrong mapping attaches a beacon to an
+        innocent machine with full confidence and a clean chain of custody, so
+        the chain has to carry the mapping itself — which file stated it, on
+        which line, and how old the statement was when the traffic happened.
+        """
+        mapping = self.inventory.resolve(ip, self.capture)
+        if mapping is None:
+            return []
+        # A caller-supplied `ip_to_host` entry overrides the file, and citing
+        # a line that did not produce the name would be a false citation.
+        if self.ip_to_host.get(mapping.address) != mapping.hostname:
+            return []
+        return [_resolution_evidence(mapping, self.capture)]
 
     def target(self, ip: str) -> Entity:
         """Represent a destination address, preferring an observed domain."""

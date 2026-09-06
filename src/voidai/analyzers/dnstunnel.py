@@ -346,7 +346,7 @@ class DnsTunnelAnalyzer(BaseAnalyzer):
             predicate=Predicate.TUNNELS_DNS_OVER,
             subject=ctx.actor(str(row["src_ip"])),
             object=Entity(type=EntityType.DOMAIN, value=str(row["zone"])),
-            evidence=[evidence],
+            evidence=[evidence, *ctx.resolution_evidence(str(row["src_ip"]))],
             confidence=round(score.score, 4),
             basis=score.basis(),
             severity=(

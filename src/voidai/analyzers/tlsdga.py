@@ -796,7 +796,7 @@ class TlsDgaAnalyzer(BaseAnalyzer):
             predicate=Predicate.RESOLVES_ALGORITHMIC_DOMAIN,
             subject=ctx.actor(str(row["src_ip"])),
             object=Entity(type=EntityType.DOMAIN, value=domain),
-            evidence=evidence,
+            evidence=[*evidence, *ctx.resolution_evidence(str(row["src_ip"]))],
             confidence=round(score.score, 4),
             basis=score.basis(),
             severity=(
@@ -946,7 +946,7 @@ class TlsDgaAnalyzer(BaseAnalyzer):
             predicate=Predicate.PRESENTS_RARE_TLS_FINGERPRINT,
             subject=ctx.actor(str(row["src_ip"])),
             object=Entity(type=EntityType.TLS_FINGERPRINT, value=score.fingerprint),
-            evidence=evidence,
+            evidence=[*evidence, *ctx.resolution_evidence(str(row["src_ip"]))],
             confidence=round(score.score, 4),
             basis=score.basis(),
             # Held at the Lexicon default. A rare fingerprint is a lead, and

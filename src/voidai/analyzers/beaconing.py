@@ -499,7 +499,10 @@ class BeaconingAnalyzer(BaseAnalyzer):
             predicate=Predicate.BEACONS_TO,
             subject=ctx.actor(str(row["src_ip"])),
             object=ctx.target(str(row["dst_ip"])),
-            evidence=self._evidence(score, artifacts),
+            evidence=[
+                *self._evidence(score, artifacts),
+                *ctx.resolution_evidence(str(row["src_ip"])),
+            ],
             confidence=round(score.score, 4),
             basis=score.basis(),
             severity=(

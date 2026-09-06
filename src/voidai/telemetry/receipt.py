@@ -17,6 +17,7 @@ import resource
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from voidai.ingest.inventory import Coverage
 from voidai.telemetry.power import EnergyReading
 
 
@@ -63,6 +64,12 @@ class RunReceipt:
     findings_emitted: int = 0
     incidents_emitted: int = 0
     claims_struck: int = 0
+
+    #: What the asset inventory reached, when one was loaded. A mapping count
+    #: alone answers the wrong question — an inventory covering 3% of an
+    #: estate is a rounding error dressed as an improvement — so the receipt
+    #: carries the fraction of observed addresses it actually resolved.
+    inventory: Coverage | None = None
 
     peak_rss_mb: float = 0.0
     host: str = field(default_factory=platform.node)
@@ -135,6 +142,18 @@ class RunReceipt:
                 "invocations": self.tokens.invocations,
                 "model": self.tokens.model,
             },
+            "inventory": (
+                {
+                    "mappings_loaded": self.inventory.loaded,
+                    "mappings_applied": self.inventory.applied,
+                    "mappings_dropped": self.inventory.dropped,
+                    "addresses_observed": self.inventory.observed,
+                    "addresses_resolved": self.inventory.matched,
+                    "coverage": round(self.inventory.fraction, 4),
+                }
+                if self.inventory
+                else None
+            ),
             "work": {
                 "records_ingested": self.records_ingested,
                 "findings_emitted": self.findings_emitted,
