@@ -694,7 +694,79 @@ alone, which is exactly cluster 1's mistake: keeping the claim after losing
 the measurement. `executes_process_from_unusual_path` is noted as a candidate
 and deliberately not minted.
 
-## 6 · Web — `analyzer-web`
+## 6 · Asset inventory — `analyzer-inventory`
+
+Not an analyzer at all, and the highest ratio of value to lift left on this
+list. **One parser. No correlator change, no Lexicon change, no new
+predicate.**
+
+Cluster 5 delivered host telemetry and only half its promised payoff, because
+Sysmon records a computer name and a connection log records an address, so one
+compromised machine appears as two incidents that do not corroborate each
+other. `AnalysisContext.ip_to_host` is already shaped for the answer,
+`AnalysisContext.actor()` already prefers it, and all six network analyzers
+already route their subject through `actor()`. The map is simply never
+populated by anything.
+
+### Measured, before the work is specified
+
+Loading a single mapping by hand — `{"10.0.1.14": "FINANCE-WS04"}` — against
+the demo capture:
+
+| | No inventory | One line of inventory |
+|---|---|---|
+| Patient zero | **two rows**: `ip:10.0.1.14` with 5 behaviours, `host:FINANCE-WS04` with 2 | **one row**: `host:FINANCE-WS04` with **7** |
+| Priority | 2.50 and 1.50 | 2.50 |
+| Incidents in the queue | 10 | 9 |
+
+Seven behaviours on one subject — `beacons_to`, `scans`, `tunnels_dns_over`,
+`resolves_algorithmic_domain`, `triggered_signature`, `executes_rare_process`,
+`exhibits_anomalous_lineage` — is network and host evidence corroborating on
+one machine, which is the thing cluster 5 was ranked highest for and did not
+get. Nothing else in the pipeline changes.
+
+**Input** An operator-supplied inventory file. Follow `docs/ioc.md` and
+`ingest/ioc.py` exactly: a `#`-prefixed metadata header, then one mapping per
+line. It is read from disk and never fetched — rule 11, and this is the second
+cluster in a row where the tempting shortcut is a lookup service.
+
+### Done when
+
+`ingest/inventory.py`, an `--inventory` option on `run` and `hunt` wired
+through `_detect` the way `--intel` is, a documented file format, `voidai
+doctor` reporting how many mappings loaded and how many observed addresses they
+cover, the demo capture shipping one, and the README demo block re-run.
+
+### The trap that will bite you
+
+**Resolve the finding, not the incident.** `actor()` does this already and it is
+the right layer: a finding that names `host:FINANCE-WS04` is a *more* accurate
+assertion than one naming the address, and its evidence still cites the
+`conn.log` lines it was measured from. Do not add a second resolution step in
+`correlate/incidents.py` — cluster 2 settled that incidents attach and findings
+assert, and this is the same rule from the other side.
+
+**A wrong mapping is worse than none.** DHCP moves addresses. An inventory
+naming the wrong machine attaches a beacon to an innocent host with full
+confidence and a clean chain of custody — the one failure this project cannot
+tolerate. Record where each mapping came from and when it was stated, the way
+`ingest/ioc.py` records an indicator's provenance and age, and put both in the
+evidence payload. If the file carries a timestamp older than the capture,
+say so rather than resolving silently.
+
+**Coverage is a number the operator needs.** An inventory covering 3% of an
+estate is a rounding error dressed as an improvement. Report coverage in
+`doctor` and in the receipt, not just the mapping count.
+
+### Validation
+
+Synthetic, and there is nothing to detect — the correctness question is whether
+the join is right and whether a stale or partial inventory degrades honestly.
+Rule 7 still applies to how that is written up.
+
+---
+
+## 7 · Web — `analyzer-web`
 
 Listed last deliberately. It is the least novel cluster — the space is crowded
 with mature tools — and the one where VoidAI's architecture adds least.
