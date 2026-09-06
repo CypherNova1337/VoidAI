@@ -436,6 +436,34 @@ class TestDoctorTellsTheTruth:
 
         assert "[/dim]" not in _safe("x[/dim]y") or "\\" in _safe("x[/dim]y")
 
+    def test_why_there_is_no_narrative_reaches_the_operator_verbatim(
+        self, capture: Path, tmp_path: Path
+    ) -> None:
+        """Both reasons the backend can give carry brackets, and both are
+        actionable only if exact: the install hint names the `.[llm]` extra,
+        and the 'not found' message names the `--model` path to compare
+        against what was meant. Rendered as markup, `[llm]` is consumed as a
+        tag — leaving `pip install -e '.'`, which installs nothing missing —
+        and the path displayed is not the path passed.
+
+        Asserted against whichever reason this environment actually produces,
+        so the test cannot pass by never reaching the branch.
+        """
+        from typer.testing import CliRunner
+
+        from voidai import cli
+        from voidai.reason.backend import default_backend
+
+        typed = str(tmp_path / "[bold red]weights[/].gguf")
+        reason = default_backend(typed).reason
+        assert "[" in reason, "neither reason carries markup; this test has gone stale"
+
+        out = CliRunner().invoke(cli.app, ["run", str(capture), "--model", typed]).output
+        collapsed = " ".join(out.split())
+        assert " ".join(reason.split()) in collapsed, (
+            f"the renderer altered the reason before the operator saw it: {reason!r}"
+        )
+
 
 def _inventory_line(output: str) -> str:
     return next((ln for ln in output.splitlines() if "inventory" in ln.lower()), "")

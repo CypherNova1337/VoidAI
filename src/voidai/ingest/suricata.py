@@ -31,13 +31,17 @@ _ALERT_EVENT = "alert"
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S%.f%z"
 
 
-def _alert_field(name: str, dtype: pl.DataType) -> pl.Expr:
+def _alert_field(name: str, dtype: pl.DataType, present: set[str]) -> pl.Expr:
     """Pull one field out of the nested `alert` object.
 
     Returns a typed null column when the field is absent, so a sensor with an
     older or trimmed EVE schema degrades one signal rather than failing the
-    parse.
+    parse. `present` is the set of fields the file's `alert` objects actually
+    carry: asking a struct for a field it does not have raises at collect time,
+    which is a whole log lost over one missing key.
     """
+    if name not in present:
+        return pl.lit(None, dtype=dtype).alias(name)
     return pl.col("alert").struct.field(name).cast(dtype, strict=False).alias(name)
 
 
@@ -49,9 +53,20 @@ def scan_eve(path: str | Path) -> pl.LazyFrame:
         "source_line", offset=1
     )
 
-    available = set(scan.collect_schema().names())
+    schema = scan.collect_schema()
+    available = set(schema.names())
     if "alert" not in available:
         return pl.LazyFrame(schema=ALERT_SCHEMA)
+
+    # `alert` is only a struct when the reader inferred one. A file whose alert
+    # objects are all null, or a producer that writes the key as a string,
+    # leaves nothing to take fields from.
+    alert_dtype = schema["alert"]
+    alert_fields = (
+        {field.name for field in alert_dtype.fields}
+        if isinstance(alert_dtype, pl.Struct)
+        else set()
+    )
 
     if "event_type" in available:
         scan = scan.filter(pl.col("event_type") == _ALERT_EVENT)
@@ -81,10 +96,10 @@ def scan_eve(path: str | Path) -> pl.LazyFrame:
             else pl.lit(None, dtype=pl.Int32).alias("dst_port")
         ),
         column("proto", pl.Utf8),
-        _alert_field("signature", pl.Utf8),
-        _alert_field("signature_id", pl.Int64),
-        _alert_field("category", pl.Utf8),
-        _alert_field("severity", pl.Int32),
+        _alert_field("signature", pl.Utf8, alert_fields),
+        _alert_field("signature_id", pl.Int64, alert_fields),
+        _alert_field("category", pl.Utf8, alert_fields),
+        _alert_field("severity", pl.Int32, alert_fields),
         pl.lit(str(path)).alias("source_file"),
         pl.col("source_line").cast(pl.Int64),
     ).filter(pl.col("ts").is_not_null() & pl.col("signature").is_not_null())
@@ -125,7 +140,7 @@ def _read_salvaging(path: Path) -> pl.DataFrame:
         salvaged = Path(tmp.name)
     try:
         frame = scan_eve(salvaged).collect(engine="streaming")
-    except (pl.exceptions.ComputeError, pl.exceptions.NoDataError):
+    except pl.exceptions.PolarsError:
         return empty(ALERT_SCHEMA)
     finally:
         salvaged.unlink(missing_ok=True)
@@ -149,7 +164,10 @@ def read_eve(path: str | Path) -> pl.DataFrame:
         return empty(ALERT_SCHEMA)
     try:
         frame = scan_eve(path).collect(engine="streaming")
-    except (pl.exceptions.ComputeError, pl.exceptions.NoDataError):
+    except pl.exceptions.PolarsError:
+        # Every parse failure polars can raise, not an enumerated few: this is
+        # the boundary between a stranger's file and the pipeline, and the
+        # contract here is that a bad file costs its own records and no more.
         return _read_salvaging(path)
     except FileNotFoundError:
         return empty(ALERT_SCHEMA)

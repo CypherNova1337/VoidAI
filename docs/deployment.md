@@ -50,11 +50,25 @@ it survives):
 
 | Workload | Records | Peak | Smallest ceiling that completes |
 |---|---|---|---|
-| `voidai demo` | 74,157 | 231 MB | **512 MB** |
-| `pytest` (361 tests) | — | 286 MB | ≤1 GB |
+| `voidai demo` | 79,300 | 221–246 MB | **192 MB** |
+| `pytest` (738 tests) | — | 324–332 MB | **384 MB** |
 | CTU-13 scenario 6 | 1.9M | 550 MB | **768 MB** |
 | CTU-13 scenario 3 | 12.7M | 2,545 MB | **2.6 GB** |
-| Detection + Qwen2.5-1.5B q4\_k\_m | 74,157 | 2,072 MB | ~2.5 GB |
+| Detection + Qwen2.5-1.5B q4\_k\_m | 79,300 | 2,072 MB | ~2.5 GB |
+
+The first two rows were re-measured after the analyzer count doubled; the
+demo capture itself grew from 74,157 records to 79,300 when `ssl.log` and
+`sysmon.jsonl` were added to it, which is why the earlier figures read low on
+records and high on ceiling. The two CTU-13 rows and the model row are carried
+forward from when they were taken and have not been repeated since.
+
+A ceiling below the peak is not a contradiction. `voidai demo` completes at
+192 MB and at 224 MB, but at both the reported peak *equals the ceiling
+exactly*: the kernel is reclaiming page cache to keep the process under the
+limit, and the number stops describing the working set. Only from 256 MB does
+the peak float free at ~240 MB, which is the real figure. Below 192 MB it is
+OOM-killed on every run. Take the floor as the point of failure and the peak
+as the requirement — they answer different questions.
 
 **Where the 66-hour capture actually breaks**, bisected against a hard ceiling:
 

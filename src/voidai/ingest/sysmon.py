@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import zlib
 from pathlib import Path
 
 import polars as pl
@@ -97,13 +98,17 @@ _FIELDS: dict[str, str] = {
 def _open_text(path: Path) -> str:
     """Read a log, transparently decompressing `.gz`.
 
-    Same contract as `zeek._open_text`. Committed fixtures are gzipped because
-    a JSON-lines process log is mostly repeated key names and compresses by a
-    factor of twelve.
+    Same contract as `zeek._open_text`, including that a `.gz` which cannot be
+    decompressed yields no records instead of raising. Committed fixtures are
+    gzipped because a JSON-lines process log is mostly repeated key names and
+    compresses by a factor of twelve.
     """
     if path.suffix == ".gz":
-        with gzip.open(path, "rt", errors="replace") as handle:
-            return handle.read()
+        try:
+            with gzip.open(path, "rt", errors="replace") as handle:
+                return handle.read()
+        except (OSError, EOFError, zlib.error):
+            return ""
     return path.read_text(errors="replace")
 
 

@@ -86,6 +86,52 @@ class TestReadConnLog:
             fh.write(TSV_CONN)
         assert read_conn_log(path).height == 3
 
+    @pytest.mark.parametrize(
+        "corruption",
+        [
+            "not-gzip-at-all",
+            "truncated-mid-stream",
+            "valid-header-corrupt-payload",
+        ],
+    )
+    def test_undecompressable_gzip_yields_no_records(
+        self, tmp_path: Path, corruption: str
+    ) -> None:
+        """A rotated directory holds `.gz` files that were cut off mid-copy, and
+        files someone renamed by hand. Each raises a different exception out of
+        the gzip module, and none of them is a reason to abandon the other logs
+        in the directory."""
+        path = tmp_path / "conn.log.gz"
+        good = gzip.compress(TSV_CONN.encode())
+        if corruption == "not-gzip-at-all":
+            path.write_bytes(TSV_CONN.encode())
+        elif corruption == "truncated-mid-stream":
+            path.write_bytes(good[: len(good) // 2])
+        else:
+            payload = bytearray(good)
+            payload[12:24] = b"\xff" * 12
+            path.write_bytes(bytes(payload))
+
+        frame = read_conn_log(path)
+        assert frame.height == 0
+        assert set(frame.columns) == set(CONNECTION_SCHEMA)
+
+    def test_a_corrupt_log_does_not_suppress_its_readable_neighbours(
+        self, tmp_path: Path
+    ) -> None:
+        """The point of absorbing the failure: one bad file in a directory must
+        cost only that file's records, not the whole run."""
+        (tmp_path / "conn.log").write_text(TSV_CONN)
+        (tmp_path / "conn.00:00:00-01:00:00.log.gz").write_bytes(b"\x8f\x22 not gzip")
+        assert load_connections(tmp_path).height == 3
+
+    def test_a_readable_gzip_is_still_read(self, tmp_path: Path) -> None:
+        """Guards the fix itself: catching decompression errors must not turn
+        into catching everything and reporting an empty file."""
+        path = tmp_path / "conn.log.gz"
+        path.write_bytes(gzip.compress(TSV_CONN.encode()))
+        assert read_conn_log(path).height == 3
+
     def test_empty_file_yields_conformant_empty_frame(self, tmp_path: Path) -> None:
         path = tmp_path / "conn.log"
         path.write_text("")

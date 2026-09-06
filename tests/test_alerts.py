@@ -105,6 +105,43 @@ class TestEveParsing:
         path.write_text(event(1_750_000_000.0, "10.0.0.5", "ET TROJAN Foo", 1) + "\nnot json\n")
         assert read_eve(path).height >= 1
 
+    @pytest.mark.parametrize("absent", ["signature_id", "category", "severity"])
+    def test_alert_object_missing_a_field_still_parses(
+        self, tmp_path: Path, absent: str
+    ) -> None:
+        """Not every producer of `eve.json` is Suricata itself, and the ones
+        that reshape it — a shipper, a trimmed template, an older release —
+        drop keys. Asking a struct for a field it lacks throws, so a single
+        missing key used to cost the entire log."""
+        record = json.loads(event(1_750_000_000.0, "10.0.0.5", "ET TROJAN Foo", 1))
+        del record["alert"][absent]
+        (tmp_path / "eve.json").write_text(json.dumps(record) + "\n")
+
+        frame = read_eve(tmp_path / "eve.json")
+        assert frame.height == 1
+        assert frame["signature"].to_list() == ["ET TROJAN Foo"]
+        assert frame[absent].to_list() == [None]
+
+    def test_alert_object_carrying_only_a_signature(self, tmp_path: Path) -> None:
+        """The floor of the same rule: everything optional gone at once. The
+        signature is what the analyzer needs, and it survives alone."""
+        record = json.loads(event(1_750_000_000.0, "10.0.0.5", "ET TROJAN Foo", 1))
+        record["alert"] = {"signature": "ET TROJAN Foo"}
+        (tmp_path / "eve.json").write_text(json.dumps(record) + "\n")
+
+        frame = read_eve(tmp_path / "eve.json")
+        assert frame.height == 1
+        assert frame["signature"].to_list() == ["ET TROJAN Foo"]
+
+    def test_alert_that_is_not_an_object_yields_no_alerts(self, tmp_path: Path) -> None:
+        """`alert` present but not a struct leaves no fields to read. That is a
+        file with nothing in it for us, not a reason to abandon the run."""
+        record = json.loads(event(1_750_000_000.0, "10.0.0.5", "ET TROJAN Foo", 1))
+        record["alert"] = "ET TROJAN Foo"
+        (tmp_path / "eve.json").write_text(json.dumps(record) + "\n")
+
+        assert read_eve(tmp_path / "eve.json").height == 0
+
 
 class TestCategoryWeight:
     @pytest.mark.parametrize(

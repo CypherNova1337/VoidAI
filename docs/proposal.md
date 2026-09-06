@@ -188,7 +188,7 @@ records/second in the same run — the two stages are metered separately.
 
 ### Test suite
 
-361 tests. Includes one that severs sockets and asserts the whole pipeline
+738 tests. Includes one that severs sockets and asserts the whole pipeline
 still completes, backing the offline claim rather than merely stating it, and
 a set that *executes* generated hunt queries against logs with known contents
 — because a query that parses but matches nothing looks exactly like a clean
@@ -279,7 +279,7 @@ voidai bench --real <capture>            # CTU-13, fetch instructions in benchma
 voidai hunt <capture> --dialect sigma    # incidents to SIEM queries
 voidai lexicon                           # the complete grammar
 voidai doctor                            # platform, energy source, model
-pytest                                   # 361 tests
+pytest                                   # 738 tests
 ```
 
 - [`benchmarks.md`](benchmarks.md) — every number above, and how it was measured

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import zlib
 from pathlib import Path
 
 import polars as pl
@@ -29,10 +30,20 @@ _UNSET = "-"  # Zeek's null token in TSV mode
 
 
 def _open_text(path: Path) -> io.StringIO:
-    """Read a log, transparently decompressing .gz."""
+    """Read a log, transparently decompressing .gz.
+
+    `errors="replace"` covers a bad *decode*; it cannot cover a bad
+    *decompress*. A rotated sensor directory routinely holds a `.gz` that was
+    truncated mid-copy, or a plain file someone renamed. Those raise before any
+    text exists, so they are caught here and yield no records — the same
+    outcome as any other unreadable log, rather than a traceback.
+    """
     if path.suffix == ".gz":
-        with gzip.open(path, "rt", errors="replace") as fh:
-            return io.StringIO(fh.read())
+        try:
+            with gzip.open(path, "rt", errors="replace") as fh:
+                return io.StringIO(fh.read())
+        except (OSError, EOFError, zlib.error):
+            return io.StringIO()
     return io.StringIO(path.read_text(errors="replace"))
 
 

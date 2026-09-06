@@ -426,8 +426,12 @@ def run(
             config=ReasoningConfig(max_incidents=explain),
         )
         if not reasoner.available():
+            # The reason carries the `--model` path the operator typed, and
+            # `.[llm]` in the install hint. Both are eaten as markup unescaped:
+            # the hint becomes a command that does not install anything, and a
+            # "not found" message names a path that is not the one passed.
             console.print(
-                f"\n[dim]No narrative: {reasoner.backend.reason}. "
+                f"\n[dim]No narrative: {_safe(reasoner.backend.reason)}. "
                 "Detection is unaffected.[/dim]"
             )
         else:

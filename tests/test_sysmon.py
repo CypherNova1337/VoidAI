@@ -221,6 +221,17 @@ class TestDiscovery:
             handle.write(json.dumps(_record()) + "\n")
         assert read_sysmon(path).height == 1
 
+    def test_undecompressable_gzip_yields_no_records(self, tmp_path: Path) -> None:
+        """Host telemetry is the format most often shipped gzipped, so it is
+        also the one most often truncated in transit. A `.gz` that will not
+        decompress costs its own records and nothing else."""
+        good = gzip.compress((json.dumps(_record()) + "\n").encode())
+        (tmp_path / "sysmon.jsonl.gz").write_bytes(good[: len(good) // 2])
+        assert read_sysmon(tmp_path / "sysmon.jsonl.gz").height == 0
+
+        _write(tmp_path, [_record()], name="other.sysmon.jsonl")
+        assert load_processes(tmp_path).height == 1
+
     @pytest.mark.parametrize(
         "name",
         ["sysmon.jsonl", "sysmon.json", "host.sysmon.json", "sysmon-01.jsonl.gz"],
